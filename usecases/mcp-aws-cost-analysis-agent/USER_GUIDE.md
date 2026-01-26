@@ -171,16 +171,18 @@ The agent will:
   "models": {
     "claude_haiku": {
       "model_name": "Claude 3 Haiku",
-      "input_cost": 125.00,
-      "output_cost": 62.50,
-      "total_cost": 187.50,
+      "costs": {
+        "input_token_cost": 125.00,
+        "output_token_cost": 62.50,
+        "total_token_cost": 187.50
+      },
       "pricing_details": {
         "region": "us-west-2",
         "calculations": ["step-by-step breakdown"]
       }
     }
   },
-  "total_monthly_cost": 187.50
+  "total_cost_for_all_models": 187.50
 }
 ```
 
@@ -263,12 +265,6 @@ params = {
     "system_prompt_tokens": 500,
     "history_qa_pairs": 3,
     
-    # Vector database (optional)
-    "vector_database": {
-        "chunks_per_call": 10,
-        "tokens_per_chunk": 300
-    },
-    
     # LLM model configuration
     "model1": {
         "model_name": "Claude 3 Haiku",
@@ -278,12 +274,22 @@ params = {
         "output_tokens_per_question": 500,
         "percent_questions_for_model": 100,
         
+        # Vector database (optional, per-model)
+        "vector_database": {
+            "chunks_per_call": 10,
+            "tokens_per_chunk": 300,
+            "percent_questions_using_vector_db": 100  # Percentage of THIS MODEL's questions that use vector DB
+        },
+        
         # Tools (optional, for agentic use cases)
         "tools": {
-            "number_of_tools": 10,
-            "tools_used_by_agent": 3,
-            "tool_invocations_per_question": 1.5,
-            "percent_questions_that_invoke_tools": 80
+            "number_of_tools": 50,  # Total tools indexed in Gateway (default: 50)
+            "tools_passed_to_model": 10,  # Tools selected by Gateway and passed to model (default: 10)
+            "tool_invocations_per_question": 3,  # Average number of tools invoked per question (default: 3)
+            "percent_questions_that_invoke_tools": 80,  # Percentage of questions that invoke tools (default: 80%)
+            "input_tokens_per_tool": 300,  # Input tokens per tool description (default: 300)
+            "output_tokens_for_tool_invocation": 100,  # Output tokens for tool invocation (default: 100)
+            "tokens_per_tool_result": 500  # Tokens per tool execution result returned to model (default: 500)
         }
     }
 }
@@ -297,32 +303,48 @@ params = {
     "questions_per_day": 333333,
     "days_per_month": 30,
     
-    # Runtime component
+    # Runtime component (optional)
     "runtime": {
         "cost_per_vcpu_hour": 0.0895,
         "cost_per_gb_hour": 0.00945,
-        "percent_wait_time": 90,
-        "num_cpus": 1,
-        "gb_memory": 2,
-        "seconds_per_question": 120
+        "percent_wait_time": 90,  # Percentage of time waiting for model response (default: 90%)
+        "num_cpus": 2,  # Number of virtual CPUs (default: 2)
+        "gb_memory": 4,  # Memory allocation in GB (default: 4)
+        "seconds_per_question": 60,  # Agent processing time per question (default: 60)
+        "percent_questions_using_runtime": 100  # Percentage using runtime (default: 100)
     },
     
     # Browser tool (optional)
     "browser": {
         "cost_per_vcpu_hour": 0.0895,
         "cost_per_gb_hour": 0.00945,
-        "percent_wait_time": 90,
-        "seconds_per_question": 600,
-        "percent_questions_using_browser": 20
+        "percent_wait_time": 90,  # Percentage of time waiting for model response (default: 90%)
+        "num_cpus": 4,  # Number of virtual CPUs (default: 4)
+        "gb_memory": 16,  # Memory allocation in GB (default: 16)
+        "seconds_per_question": 600,  # Agent processing time per question (default: 600)
+        "percent_questions_using_browser": 0  # Percentage using browser tool (default: 0)
     },
     
-    # Gateway component
+    # Code Interpreter tool (optional)
+    "code_interpreter": {
+        "cost_per_vcpu_hour": 0.0895,
+        "cost_per_gb_hour": 0.00945,
+        "percent_wait_time": 20,  # Percentage of time waiting for model response (default: 20%)
+        "num_cpus": 4,  # Number of virtual CPUs (default: 4)
+        "gb_memory": 16,  # Memory allocation in GB (default: 16)
+        "seconds_per_question": 60,  # Agent processing time per question (default: 60)
+        "percent_questions_using_code_interpreter": 0  # Percentage using code interpreter (default: 0)
+    },
+    
+    # Gateway component (optional)
     "gateway": {
         "cost_per_invoke_tool_api": 0.00025,
         "cost_per_search_api_invocation": 0.00025,
         "cost_per_tool_indexed_per_month": 0.10,
-        "tools_to_invoke_per_question": 1,
-        "percent_questions_using_tools": 100
+        "tool_invocations_per_question": 3,  # Average number of tools invoked per question (default: 3)
+        "search_api_calls_per_question": 1,  # Semantic search calls per question (default: 1)
+        "total_tools_indexed": 50,  # Total tools requiring indexing (default: 50)
+        "percent_questions_using_tools": 80  # Percentage using any tools (default: 80)
     },
     
     # Memory component
@@ -520,10 +542,13 @@ Include tool usage for agentic applications:
 
 ```python
 "tools": {
-    "number_of_tools": 10,  # Total tools available
-    "tools_used_by_agent": 3,  # Tools actually invoked
-    "tool_invocations_per_question": 1.5,  # Avg invocations
-    "percent_questions_that_invoke_tools": 80  # % using tools
+    "number_of_tools": 50,  # Total tools indexed in Gateway
+    "tools_passed_to_model": 10,  # Tools selected by Gateway and passed to model
+    "tool_invocations_per_question": 3,  # Average number of tools invoked per question
+    "percent_questions_that_invoke_tools": 80,  # Percentage of questions that invoke tools
+    "input_tokens_per_tool": 300,  # Input tokens per tool description
+    "output_tokens_for_tool_invocation": 100,  # Output tokens for tool invocation
+    "tokens_per_tool_result": 500  # Tokens per tool execution result
 }
 ```
 
@@ -753,7 +778,7 @@ bedrock_result = use_bedrock_calculator({
     }
 })
 
-print(f"Total cost: ${bedrock_result['total_all_components']:.2f}")
+print(f"Total cost: ${bedrock_result['total_cost_for_all_models']:.2f}")
 ```
 
 ### Fetching Pricing Data

@@ -291,8 +291,7 @@ Each calculator has a corresponding what-if analysis tool:
 
 ```python
 class BedrockCosts(BaseModel):
-    models: Dict[str, LLMModelCosts]
-    vector_database: Optional[VectorDatabaseCosts]
+    models: Dict[str, LLMModelCosts]  # Each model can have its own vector_database config
     questions_per_month: int
     total_monthly_cost: float
 
@@ -525,16 +524,18 @@ def use_bedrock_calculator(params: dict):
                       tool_tokens + system_tokens + history_tokens)
         
         # Calculate costs
-        input_cost = (total_input / 1_000_000) * input_price
-        output_cost = (total_output / 1_000_000) * output_price
+        input_token_cost = (total_input / 1_000_000) * input_price
+        output_token_cost = (total_output / 1_000_000) * output_price
         
         # Build explanations
         explanations = build_step_by_step_explanations(...)
         
         results[model_key] = {
-            'input_cost': input_cost,
-            'output_cost': output_cost,
-            'total_cost': input_cost + output_cost,
+            'costs': {
+                'input_token_cost': input_token_cost,
+                'output_token_cost': output_token_cost,
+                'total_token_cost': input_token_cost + output_token_cost
+            },
             'explanations': explanations
         }
     
