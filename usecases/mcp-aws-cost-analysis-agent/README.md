@@ -358,12 +358,14 @@ with 1000 input tokens and 500 output tokens per question
     "models": {
       "model1": {
         "model_name": "claude-3-haiku",
-        "input_cost": 2.50,
-        "output_cost": 6.25,
-        "total_cost": 8.75
+        "costs": {
+          "input_token_cost": 2.50,
+          "output_token_cost": 6.25,
+          "total_token_cost": 8.75
+        }
       }
     },
-    "total_monthly_cost": 8.75
+    "total_cost_for_all_models": 8.75
   }
 }
 ```

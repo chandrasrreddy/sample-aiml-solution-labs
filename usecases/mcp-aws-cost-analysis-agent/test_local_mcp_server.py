@@ -26,7 +26,10 @@ import argparse
 from datetime import timedelta
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamablehttp_client, streamable_http_client
+from strands import Agent
+from strands.models import BedrockModel
+from strands.tools.mcp import MCPClient
 
 
 async def test_mcp_server(mcp_url: str, verbose: bool = False):
@@ -328,6 +331,399 @@ async def test_single_query(mcp_url: str, query: str, verbose: bool = False):
         sys.exit(1)
 
 
+def format_human_readable(result_data):
+    """Format JSON response in human-readable format"""
+    output = []
+    
+    # Check for Bedrock costs
+    if 'bedrock_costs' in result_data:
+        bedrock = result_data['bedrock_costs']
+        output.append("\n" + "="*80)
+        output.append("💰 BEDROCK COSTS")
+        output.append("="*80)
+        
+        # Global info
+        questions = bedrock.get('questions_per_month_all_models', 0)
+        output.append(f"\n📊 Total Questions: {questions:,} per month")
+        
+        # Global assumptions
+        if 'assumptions' in bedrock and 'global' in bedrock['assumptions']:
+            global_assumptions = bedrock['assumptions']['global']
+            output.append(f"\n🔧 Global Settings:")
+            output.append(f"   • System prompt tokens: {global_assumptions.get('system_prompt_tokens', 0):,}")
+            output.append(f"   • History Q&A pairs: {global_assumptions.get('history_qa_pairs', 0)}")
+        
+        # Warnings
+        if 'warnings' in bedrock and bedrock['warnings']:
+            output.append(f"\n⚠️  Warnings:")
+            for warning in bedrock['warnings']:
+                output.append(f"   {warning}")
+        
+        # Individual models
+        output.append(f"\n🤖 Model Costs:")
+        for key, value in bedrock.items():
+            if key not in ['questions_per_month_all_models', 'assumptions', 
+                          'warnings', 'total_cost_for_all_models'] and isinstance(value, dict):
+                model = value
+                output.append(f"\n   📦 {key.upper()}: {model.get('model_name', 'Unknown')}")
+                
+                costs = model.get('costs', {})
+                output.append(f"      💵 Input tokens:  ${costs.get('input_token_cost', 0):,.2f}")
+                output.append(f"      💵 Output tokens: ${costs.get('output_token_cost', 0):,.2f}")
+                output.append(f"      💵 Total:         ${costs.get('total_token_cost', 0):,.2f}")
+                
+                assumptions = model.get('assumptions', {})
+                output.append(f"      📊 Questions allocated: {assumptions.get('calculated_questions_for_this_model', 0):,.0f} ({assumptions.get('percent_questions_for_model', 0):.0f}%)")
+                output.append(f"      📊 Input tokens/question: {assumptions.get('input_tokens_per_question', 0):,}")
+                output.append(f"      📊 Output tokens/question: {assumptions.get('output_tokens_per_question', 0):,}")
+                
+                # Vector database info if present for this model
+                if 'vector_database' in assumptions:
+                    vdb = assumptions['vector_database']
+                    output.append(f"      🗄️  Vector Database:")
+                    output.append(f"         • Chunks per call: {vdb.get('chunks_per_call', 0)}")
+                    output.append(f"         • Tokens per chunk: {vdb.get('tokens_per_chunk', 0)}")
+                    output.append(f"         • % questions using: {vdb.get('percent_questions_using_vector_db', 0):.0f}%")
+                
+                # Tool info if present
+                if assumptions.get('number_of_tools'):
+                    output.append(f"      🔧 Tools: {assumptions.get('number_of_tools', 0)} total, {assumptions.get('tools_passed_to_model', 0)} passed to model")
+                    output.append(f"      🔧 Tool invocations/question: {assumptions.get('tool_invocations_per_question', 0)}")
+                    output.append(f"      🔧 Questions using tools: {assumptions.get('percent_questions_that_invoke_tools', 0):.0f}%")
+                
+                # Token breakdown
+                breakdown = model.get('token_breakdown', {})
+                output.append(f"      📈 Total input tokens: {breakdown.get('total_input_tokens', 0):,.0f}")
+                output.append(f"      📈 Total output tokens: {breakdown.get('total_output_tokens', 0):,.0f}")
+        
+        # Total
+        total = bedrock.get('total_cost_for_all_models', 0)
+        output.append(f"\n{'─'*80}")
+        output.append(f"💰 TOTAL BEDROCK COST: ${total:,.2f} per month")
+        output.append(f"{'─'*80}")
+    
+    # Check for AgentCore costs
+    if 'agentcore_costs' in result_data:
+        agentcore = result_data['agentcore_costs']
+        output.append("\n" + "="*80)
+        output.append("🏗️  AGENTCORE COSTS")
+        output.append("="*80)
+        
+        # Runtime
+        if 'runtime' in agentcore:
+            runtime = agentcore['runtime']
+            output.append(f"\n⚙️  Runtime:")
+            output.append(f"   💵 CPU cost:    ${runtime.get('cpu_cost', 0):,.2f}")
+            output.append(f"   💵 Memory cost: ${runtime.get('memory_cost', 0):,.2f}")
+            output.append(f"   💵 Total:       ${runtime.get('total_cost', 0):,.2f}")
+            output.append(f"   📊 vCPU hours:  {runtime.get('vcpu_hours', 0):,.2f}")
+            output.append(f"   📊 GB hours:    {runtime.get('gb_hours', 0):,.2f}")
+            output.append(f"   📊 Questions:   {runtime.get('total_questions_per_month', 0):,.0f} ({runtime.get('percent_questions_using_runtime', 0):.0f}%)")
+        
+        # Browser
+        if 'browser' in agentcore:
+            browser = agentcore['browser']
+            output.append(f"\n🌐 Browser Tool:")
+            output.append(f"   💵 CPU cost:    ${browser.get('cpu_cost', 0):,.2f}")
+            output.append(f"   💵 Memory cost: ${browser.get('memory_cost', 0):,.2f}")
+            output.append(f"   💵 Total:       ${browser.get('total_cost', 0):,.2f}")
+            output.append(f"   📊 Questions:   {browser.get('total_questions_per_month', 0):,.0f} ({browser.get('percent_questions_using_browser', 0):.0f}%)")
+        
+        # Code Interpreter
+        if 'code_interpreter' in agentcore:
+            code = agentcore['code_interpreter']
+            output.append(f"\n💻 Code Interpreter:")
+            output.append(f"   💵 CPU cost:    ${code.get('cpu_cost', 0):,.2f}")
+            output.append(f"   💵 Memory cost: ${code.get('memory_cost', 0):,.2f}")
+            output.append(f"   💵 Total:       ${code.get('total_cost', 0):,.2f}")
+            output.append(f"   📊 Questions:   {code.get('total_questions_per_month', 0):,.0f} ({code.get('percent_questions_using_code_interpreter', 0):.0f}%)")
+        
+        # Gateway
+        if 'gateway' in agentcore:
+            gateway = agentcore['gateway']
+            output.append(f"\n🚪 Gateway:")
+            output.append(f"   💵 Invoke tool cost: ${gateway.get('invoke_tool_cost', 0):,.2f}")
+            output.append(f"   💵 Search API cost:  ${gateway.get('search_api_cost', 0):,.2f}")
+            output.append(f"   💵 Indexing cost:    ${gateway.get('indexing_cost', 0):,.2f}")
+            output.append(f"   💵 Total:            ${gateway.get('total_cost', 0):,.2f}")
+            output.append(f"   📊 Tool invocations: {gateway.get('total_invoke_tool_calls', 0):,.0f}")
+            output.append(f"   📊 Search API calls: {gateway.get('total_search_api_calls', 0):,.0f}")
+            output.append(f"   📊 Questions using tools: {gateway.get('questions_using_tools_per_month', 0):,.0f} ({gateway.get('percent_questions_using_tools', 0):.0f}%)")
+        
+        # Memory
+        if 'memory' in agentcore:
+            memory = agentcore['memory']
+            output.append(f"\n🧠 Memory:")
+            output.append(f"   💵 Short-term cost:  ${memory.get('short_term_cost', 0):,.2f}")
+            output.append(f"   💵 Long-term storage: ${memory.get('long_term_storage_cost', 0):,.2f}")
+            output.append(f"   💵 Long-term retrieval: ${memory.get('long_term_retrieval_cost', 0):,.2f}")
+            output.append(f"   💵 Total:            ${memory.get('total_cost', 0):,.2f}")
+            output.append(f"   📊 Events/month:     {memory.get('total_events_per_month', 0):,.0f}")
+            output.append(f"   📊 Records stored:   {memory.get('records_stored_per_month', 0):,.0f}")
+            output.append(f"   📊 Retrievals:       {memory.get('total_retrievals_per_month', 0):,.0f}")
+        
+        # Total
+        total = agentcore.get('total_all_components', 0)
+        output.append(f"\n{'─'*80}")
+        output.append(f"💰 TOTAL AGENTCORE COST: ${total:,.2f} per month")
+        output.append(f"{'─'*80}")
+    
+    # Check for Business Value
+    if 'business_value' in result_data:
+        bva = result_data['business_value']
+        output.append("\n" + "="*80)
+        output.append("📈 BUSINESS VALUE ANALYSIS")
+        output.append("="*80)
+        
+        output.append(f"\n💰 Financial Summary:")
+        output.append(f"   Initial investment: ${bva.get('initial_investment', 0):,.2f}")
+        output.append(f"   Total benefits:     ${bva.get('total_benefits', 0):,.2f}")
+        output.append(f"   Total costs:        ${bva.get('total_costs', 0):,.2f}")
+        output.append(f"   Net value:          ${bva.get('net_value', 0):,.2f}")
+        output.append(f"   ROI:                {bva.get('roi_percent', 0):.1f}%")
+        
+        if 'cost_savings' in bva and bva['cost_savings']:
+            savings = bva['cost_savings']
+            output.append(f"\n💵 Cost Savings:")
+            output.append(f"   Hours saved/month:  {savings.get('hours_saved_per_month', 0):,.1f}")
+            output.append(f"   Costs saved/month:  ${savings.get('costs_saved_per_month', 0):,.2f}")
+        
+        if 'revenue_growth' in bva and bva['revenue_growth']:
+            revenue = bva['revenue_growth']
+            output.append(f"\n📊 Revenue Growth:")
+            output.append(f"   Time to new projects: {revenue.get('percent_time_to_new_projects', 0):.0f}%")
+            output.append(f"   Revenue/month:        ${revenue.get('revenue_generated_per_month', 0):,.2f}")
+        
+        if 'customer_churn_reduction' in bva and bva['customer_churn_reduction']:
+            churn = bva['customer_churn_reduction']
+            output.append(f"\n👥 Churn Reduction:")
+            output.append(f"   Churn before AI: {churn.get('customer_churn_before_ai', 0):.2f}%")
+            output.append(f"   Churn after AI:  {churn.get('customer_churn_after_ai', 0):.2f}%")
+            output.append(f"   Monthly value:   ${churn.get('monthly_total_churn_value', 0):,.2f}")
+    
+    return "\n".join(output)
+
+
+async def interactive_mode(mcp_url: str):
+    """Interactive mode - ask questions in a loop until user types quit/exit"""
+    
+    headers = {"Content-Type": "application/json"}
+    
+    print(f"\n{'='*80}")
+    print(f"💬 INTERACTIVE MODE")
+    print(f"{'='*80}")
+    print(f"Server: {mcp_url}")
+    print(f"\n💡 Tips:")
+    print(f"   • Ask questions about AWS costs (Bedrock, AgentCore, EMR)")
+    print(f"   • Type 'quit' or 'exit' to stop")
+    print(f"   • Type 'help' for example questions")
+    print(f"{'='*80}\n")
+    
+    try:
+        async with streamablehttp_client(
+            mcp_url,
+            headers,
+            timeout=timedelta(seconds=60)
+        ) as (read_stream, write_stream, _):
+            
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                print("✅ Connected to MCP server\n")
+                
+                while True:
+                    try:
+                        # Get user input
+                        query = input("🤔 Your question: ").strip()
+                        
+                        # Check for exit commands
+                        if query.lower() in ['quit', 'exit', 'q']:
+                            print("\n👋 Goodbye!")
+                            break
+                        
+                        # Check for help
+                        if query.lower() == 'help':
+                            print("\n📚 Example Questions:")
+                            print("   • What is the pricing for Claude Haiku in us-west-2?")
+                            print("   • Calculate Bedrock costs for 10,000 questions per month using Claude Haiku")
+                            print("   • Calculate AgentCore costs for 100 hours per month with 2GB memory")
+                            print("   • What's the ROI if I save 10 minutes per question with 10k questions/month?")
+                            print("   • Size an EMR cluster for processing 5TB of data\n")
+                            continue
+                        
+                        # Skip empty queries
+                        if not query:
+                            continue
+                        
+                        # Process query
+                        print(f"\n⏳ Processing...\n")
+                        result = await session.call_tool(
+                            name="invoke_cost_analysis_agent_read_only",
+                            arguments={"query": query}
+                        )
+                        result_text = result.content[0].text
+                        print(f"{result_text}")
+                        
+                        # # Try to parse as JSON and format
+                        # try:
+                        #     result_data = json.loads(result_text)
+                            
+                        #     # Check for errors
+                        #     if isinstance(result_data, dict) and 'error' in result_data:
+                        #         print(f"❌ Error: {result_data['error']}\n")
+                        #     else:
+                        #         # Format and display
+                        #         formatted = format_human_readable(result_data)
+                        #         print(formatted)
+                        #         print()
+                        
+                        # except json.JSONDecodeError:
+                        #     # Not JSON, display as-is
+                        #     print(f"📄 Response:\n{result_text}\n")
+                    
+                    except KeyboardInterrupt:
+                        print("\n\n👋 Interrupted. Type 'quit' to exit or continue asking questions.")
+                        continue
+                    except Exception as e:
+                        print(f"\n❌ Error processing query: {e}\n")
+                        continue
+    
+    except ConnectionRefusedError:
+        print(f"\n❌ Connection refused!")
+        print(f"\n💡 The server is not running. Start it first:")
+        print(f"   python strands_cost_calc_agent.py")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ Error connecting to MCP server: {e}")
+        sys.exit(1)
+
+
+def agent_mode(mcp_url: str):
+    """Agent mode - use Strands agent with MCP tools in an interactive loop"""
+    
+    print(f"\n{'='*80}")
+    print(f"🤖 AGENT MODE")
+    print(f"{'='*80}")
+    print(f"Server: {mcp_url}")
+    print(f"\n💡 Tips:")
+    print(f"   • Ask questions about AWS costs (Bedrock, AgentCore, EMR)")
+    print(f"   • The Strands agent will use MCP tools to answer your questions")
+    print(f"   • Type 'quit' or 'exit' to stop")
+    print(f"   • Type 'help' for example questions")
+    print(f"{'='*80}\n")
+    
+    try:
+        # Create MCP client for the running server
+        print("🔄 Connecting to MCP server...")
+        mcp_client = MCPClient(
+            lambda: streamable_http_client(mcp_url)
+        )
+        
+        # Use context manager to establish connection
+        with mcp_client:
+            print("✅ Connected to MCP server")
+            
+            # Get available tools from MCP server
+            print("🔄 Discovering MCP tools...")
+            mcp_tools = mcp_client.list_tools_sync()
+            print(f"✅ Found {len(mcp_tools)} MCP tools")
+            
+            # Display tool names
+            for i, tool in enumerate(mcp_tools, 1):
+                print(f"   Tool #{i}: {tool.tool_name}")
+            print()
+            
+            # Create Strands agent with MCP tools
+            print("🔄 Creating Strands agent with MCP tools...")
+            
+            agent_system_prompt = """
+You are an AWS cost analysis and business value assistant. You have access to MCP tools that can help answer questions about AWS costs and business value. You are just just a pass-through mechanism to the MCP tool that sends questions to the MCP tool and presents responses from the MCP tool as-is.
+
+When a user asks a question:
+1. ALWAYS pass the question as-is to the MCP tool.
+2. ALWAYS present the tool's response exactly as received - do not modify, summarize, or interpret the JSON output
+3. CRITICAL: When the tool requests additional information and shows default values, even in a multi-turn conversation, display those defaults exactly as provided without paraphrasing or interpretation. Allow the user to either accept defaults or specify different values.
+4. CRITICAL OUTPUT FORMAT: When you receive the final JSON response from the tool:
+   - First, print the complete JSON dictionary exactly as received
+   - Use a code block or clear formatting to display it
+   - Do NOT summarize, interpret, or extract specific values
+   - After showing the complete JSON, you may add a brief summary if helpful
+   - Example interaction:
+User: "Calculate costs for 10k questions"
+Tool returns: {"key": "value"}
+Your response should be:
+
+Here's the complete cost analysis:
+
+```json
+{
+  "key": "value"
+}
+Summary: The costs are $xxx
+"""
+            
+            model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+            agent = Agent(
+                system_prompt=agent_system_prompt,
+                model=BedrockModel(model_id=model_id, temperature=0.1),
+                tools=mcp_tools
+            )
+            
+            print("✅ Agent created and ready\n")
+            
+            # Interactive loop
+            while True:
+                try:
+                    # Get user input
+                    query = input("🤔 Your question: ").strip()
+                    
+                    # Check for exit commands
+                    if query.lower() in ['quit', 'exit', 'q']:
+                        print("\n👋 Goodbye!")
+                        break
+                    
+                    # Check for help
+                    if query.lower() == 'help':
+                        print("\n� Example Questions:")
+                        print("   • What is the pricing for Claude Haiku in us-west-2?")
+                        print("   • Calculate Bedrock costs for 10,000 questions per month using Claude Haiku")
+                        print("   • Calculate AgentCore costs for 100 hours per month with 2GB memory")
+                        print("   • What's the ROI if I save 10 minutes per question with 10k questions/month?")
+                        print("   • Size an EMR cluster for processing 5TB of data\n")
+                        continue
+                    
+                    # Skip empty queries
+                    if not query:
+                        continue
+                    
+                    # Process query with agent
+                    print(f"\n⏳ Agent processing...\n")
+                    response = agent(query)
+                    
+                    # Display agent response
+                    print(f"🤖 Agent: {response.message['content'][0]['text']}\n")
+                
+                except KeyboardInterrupt:
+                    print("\n\n👋 Interrupted by Ctrl+C. Exiting...")
+                    break
+                except Exception as e:
+                    print(f"\n❌ Error processing query: {e}\n")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+    
+    except ConnectionRefusedError:
+        print(f"\n❌ Connection refused!")
+        print(f"\n💡 The server is not running. Start it first:")
+        print(f"   python strands_cost_calc_agent.py")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ Error connecting to MCP server: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+        sys.exit(1)
+
+
 async def main():
     parser = argparse.ArgumentParser(
         description='Test Local MCP Server for Strands Cost Calculator Agent',
@@ -338,6 +734,12 @@ Prerequisites:
     python strands_cost_calc_agent.py
 
 Examples:
+  # Agent mode (Strands agent uses MCP tools)
+  python test_local_mcp_server.py --agent
+  
+  # Interactive mode (direct MCP tool calls)
+  python test_local_mcp_server.py --interactive
+  
   # Run full test suite
   python test_local_mcp_server.py
   
@@ -357,6 +759,10 @@ Examples:
                         help='Host where MCP server is running (default: localhost)')
     parser.add_argument('--query', type=str,
                         help='Test a single query instead of running full suite')
+    parser.add_argument('--interactive', '-i', action='store_true',
+                        help='Interactive mode - ask questions in a loop')
+    parser.add_argument('--agent', '-a', action='store_true',
+                        help='Agent mode - use Strands agent with MCP tools')
     parser.add_argument('--verbose', action='store_true',
                         help='Show detailed output including response summaries')
     
@@ -370,7 +776,13 @@ Examples:
     print(f"Server: {mcp_url}")
     
     try:
-        if args.query:
+        if args.agent:
+            # Agent mode - use Strands agent with MCP tools
+            agent_mode(mcp_url)
+        elif args.interactive:
+            # Interactive mode
+            await interactive_mode(mcp_url)
+        elif args.query:
             # Test single query
             await test_single_query(mcp_url, args.query, args.verbose)
         else:
