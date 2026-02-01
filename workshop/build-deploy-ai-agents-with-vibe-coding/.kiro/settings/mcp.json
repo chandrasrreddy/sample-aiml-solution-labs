@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "aws-bedrock-agentcore": {
-      "command": "/Users/pvsaws/miniconda3/bin/python",
-      "args": ["/Users/pvsaws/Documents/Coding/Python/Kiro/agentcore-mcp-server/server.py"],
+      "command": "/usr/bin/python3",
+      "args": ["/home/workshop/Project/agentcore-mcp-server/server.py"],
       "env": {
         "PYTHONUNBUFFERED": "1",
         "AWS_PROFILE": "kiro-temp-agentcore"

@@ -289,3 +289,270 @@ Configuration files are created and reused throughout the workflow:
 - **Model ID**: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 - **Temperature**: 0.3
 - **Memory namespaces**: ["semantic", "preferences", "summary"]
+
+
+## API VALIDATION COMMANDS REFERENCE
+
+**CRITICAL**: Before using ANY boto3 or library API, validate the method signature using `help()`.
+
+This prevents errors like:
+- Wrong parameter names
+- Wrong message formats (tuples vs dicts)
+- Wrong client names
+- Missing required parameters
+
+### How to Use These Commands:
+
+1. **Before writing code**: Run the relevant help() command
+2. **Check the signature**: Verify parameter names and types
+3. **Use exact names**: Copy parameter names exactly as shown
+4. **Test if unsure**: Run the command to see the actual API
+
+---
+
+### MEMORY APIs - Library Classes (NOT boto3)
+
+Memory uses dedicated Python library classes, NOT boto3 clients.
+
+#### MemoryManager - For creating/deleting memory resources
+
+```bash
+# Initialize MemoryManager
+python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; help(MemoryManager.__init__)" 2>&1 | head -50
+
+# Create or get memory
+python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; help(MemoryManager.get_or_create_memory)" 2>&1 | head -50
+
+# Delete memory
+python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; help(MemoryManager.delete_memory)" 2>&1 | head -50
+```
+
+#### MemoryClient - For storing/retrieving memories
+
+```bash
+# Initialize MemoryClient
+python -c "from bedrock_agentcore.memory import MemoryClient; help(MemoryClient.__init__)" 2>&1 | head -50
+
+# Create event (store conversation) - CRITICAL: messages are List[Tuple[str, str]]
+python -c "from bedrock_agentcore.memory import MemoryClient; help(MemoryClient.create_event)" 2>&1 | head -50
+
+# Retrieve memories (semantic search)
+python -c "from bedrock_agentcore.memory import MemoryClient; help(MemoryClient.retrieve_memories)" 2>&1 | head -50
+```
+
+**CRITICAL - Message Format for create_event():**
+```python
+# ✅ CORRECT: List of tuples (text, role)
+messages = [
+    ("Hello, I prefer email", "USER"),
+    ("Noted your preference", "ASSISTANT")
+]
+
+# ❌ WRONG: List of dicts
+messages = [
+    {"role": "USER", "content": [{"text": "Hello"}]}
+]
+```
+
+#### Strands Memory Integration
+
+```bash
+# AgentCoreMemoryConfig
+python -c "from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig; help(AgentCoreMemoryConfig.__init__)" 2>&1 | head -50
+
+# RetrievalConfig
+python -c "from bedrock_agentcore.memory.integrations.strands.config import RetrievalConfig; help(RetrievalConfig.__init__)" 2>&1 | head -50
+
+# AgentCoreMemorySessionManager
+python -c "from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager; help(AgentCoreMemorySessionManager.__init__)" 2>&1 | head -50
+```
+
+---
+
+### GATEWAY APIs - boto3 client: "bedrock-agentcore-control"
+
+All Gateway operations use the same boto3 client.
+
+```bash
+# Create gateway
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.create_gateway)" 2>&1 | head -50
+
+# Create gateway target (add Lambda)
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.create_gateway_target)" 2>&1 | head -50
+
+# List gateway targets
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.list_gateway_targets)" 2>&1 | head -50
+
+# Delete gateway target
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.delete_gateway_target)" 2>&1 | head -50
+
+# Delete gateway
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.delete_gateway)" 2>&1 | head -50
+```
+
+**Key Parameters:**
+- Gateway identifier: `gatewayIdentifier` (not `gateway_id`)
+- Target identifier: `targetId` (not `target_id`)
+
+---
+
+### RUNTIME APIs - boto3 client: "bedrock-agentcore-control" + Runtime library
+
+Runtime uses both boto3 client AND the Runtime library class.
+
+#### Runtime Library (bedrock_agentcore_starter_toolkit)
+
+```bash
+# Initialize Runtime
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.__init__)" 2>&1 | head -50
+
+# Configure runtime
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.configure)" 2>&1 | head -50
+
+# Launch to runtime
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.launch)" 2>&1 | head -50
+
+# Check status
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.status)" 2>&1 | head -50
+
+# Invoke agent
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.invoke)" 2>&1 | head -50
+```
+
+#### Runtime boto3 APIs
+
+```bash
+# Delete agent runtime (boto3)
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.delete_agent_runtime)" 2>&1 | head -50
+```
+
+**Key Parameters:**
+- Agent identifier: `agentRuntimeId` (not `agent_id`)
+
+---
+
+### IAM APIs - boto3 client: "iam"
+
+```bash
+# Create IAM role
+python -c "import boto3; client = boto3.client('iam'); help(client.create_role)" 2>&1 | head -50
+
+# Create IAM policy
+python -c "import boto3; client = boto3.client('iam'); help(client.create_policy)" 2>&1 | head -50
+
+# Attach policy to role
+python -c "import boto3; client = boto3.client('iam'); help(client.attach_role_policy)" 2>&1 | head -50
+
+# Delete IAM role
+python -c "import boto3; client = boto3.client('iam'); help(client.delete_role)" 2>&1 | head -50
+
+# Delete IAM policy
+python -c "import boto3; client = boto3.client('iam'); help(client.delete_policy)" 2>&1 | head -50
+
+# Get waiter for role propagation
+python -c "import boto3; client = boto3.client('iam'); help(client.get_waiter)" 2>&1 | head -50
+```
+
+**Key Parameters:**
+- Role name: `RoleName` (not `role_name`)
+- Policy ARN: `PolicyArn` (not `policy_arn`)
+- Trust policy: `AssumeRolePolicyDocument` (JSON string)
+- Permissions policy: `PolicyDocument` (JSON string)
+
+---
+
+### STS APIs - boto3 client: "sts"
+
+```bash
+# Get caller identity (for account ID)
+python -c "import boto3; client = boto3.client('sts'); help(client.get_caller_identity)" 2>&1 | head -50
+
+# Assume role
+python -c "import boto3; client = boto3.client('sts'); help(client.assume_role)" 2>&1 | head -50
+```
+
+---
+
+### CLOUDWATCH LOGS APIs - boto3 client: "logs"
+
+```bash
+# Filter log events
+python -c "import boto3; client = boto3.client('logs'); help(client.filter_log_events)" 2>&1 | head -50
+
+# Tail logs (for CLI reference)
+# aws logs tail <log-group-name> --follow
+```
+
+---
+
+### COGNITO APIs - boto3 client: "cognito-idp" (Type 2 - No MCP tool)
+
+```bash
+# Create user pool
+python -c "import boto3; client = boto3.client('cognito-idp'); help(client.create_user_pool)" 2>&1 | head -50
+
+# Create user pool client
+python -c "import boto3; client = boto3.client('cognito-idp'); help(client.create_user_pool_client)" 2>&1 | head -50
+
+# Create user pool domain
+python -c "import boto3; client = boto3.client('cognito-idp'); help(client.create_user_pool_domain)" 2>&1 | head -50
+
+# Create resource server
+python -c "import boto3; client = boto3.client('cognito-idp'); help(client.create_resource_server)" 2>&1 | head -50
+```
+
+---
+
+### LAMBDA APIs - boto3 client: "lambda" (Type 2 - No MCP tool)
+
+```bash
+# Create function
+python -c "import boto3; client = boto3.client('lambda'); help(client.create_function)" 2>&1 | head -50
+
+# Add permission
+python -c "import boto3; client = boto3.client('lambda'); help(client.add_permission)" 2>&1 | head -50
+
+# Delete function
+python -c "import boto3; client = boto3.client('lambda'); help(client.delete_function)" 2>&1 | head -50
+```
+
+---
+
+## Quick Reference: Which Client/Library to Use?
+
+| Service | Client/Library | Type |
+|---------|---------------|------|
+| Memory (create/delete) | `MemoryManager` from `bedrock_agentcore_starter_toolkit` | Library Class |
+| Memory (store/retrieve) | `MemoryClient` from `bedrock_agentcore.memory` | Library Class |
+| Gateway | `boto3.client('bedrock-agentcore-control')` | boto3 |
+| Runtime (deploy) | `Runtime` from `bedrock_agentcore_starter_toolkit` | Library Class |
+| Runtime (delete) | `boto3.client('bedrock-agentcore-control')` | boto3 |
+| IAM | `boto3.client('iam')` | boto3 |
+| STS | `boto3.client('sts')` | boto3 |
+| CloudWatch Logs | `boto3.client('logs')` | boto3 |
+| Cognito | `boto3.client('cognito-idp')` | boto3 |
+| Lambda | `boto3.client('lambda')` | boto3 |
+
+---
+
+## Validation Workflow
+
+**Before writing ANY code that uses APIs:**
+
+1. **Identify the service** (Memory, Gateway, Runtime, etc.)
+2. **Find the validation command** in this reference
+3. **Run the command** to see the actual API signature
+4. **Copy exact parameter names** from the help output
+5. **Write your code** using the validated parameters
+
+**Example:**
+```bash
+# Step 1: Check the API
+python -c "from bedrock_agentcore.memory import MemoryClient; help(MemoryClient.create_event)" 2>&1 | head -50
+
+# Step 2: See it expects List[Tuple[str, str]]
+# Step 3: Write code with correct format
+messages = [("text", "USER"), ("response", "ASSISTANT")]
+```
+
+This prevents 90% of API-related errors!
