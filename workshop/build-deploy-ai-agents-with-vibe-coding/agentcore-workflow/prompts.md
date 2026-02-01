@@ -1,0 +1,821 @@
+# AgentCore Workshop: Build a Returns & Refunds Agent with Vibe Coding
+
+Welcome! In this workshop, you'll build a production-ready returns and refunds assistant using Strands Agents and Amazon Bedrock AgentCore. 
+
+**The best part?** You'll build everything through vibe coding with Kiro - no manual coding required! Just describe what you want in natural language, and Kiro generates all the code for you. Each section teaches a concept, then you build it by chatting with Kiro. Let's get started!
+
+---
+
+## 🎯 How This Workshop Works
+
+**Vibe Coding = Zero Manual Coding**
+
+In this workshop, you won't write a single line of code manually. Instead:
+
+1. **Copy a prompt** from this guide (they look like: "Create a script called...")
+2. **Paste it into Kiro** (your AI coding assistant)
+3. **Kiro generates the code** - complete, tested, production-ready
+4. **Run the script** - see your agent come to life!
+
+That's it! No syntax errors, no debugging, no googling documentation. Just natural language → working code.
+
+**What You'll Build**
+
+By the end, you'll have:
+- A Strands agent with custom tools
+- Memory to remember customers
+- External API integration via gateway
+- Production deployment on AWS
+- Monitoring and observability
+
+All built through conversation with Kiro!
+
+---
+
+## Part 1: Build Your First Agent
+
+**What you'll learn**: Create a Strands agent with custom tools for handling returns and refunds.
+
+**How you'll build it**: Simply copy the prompts below and paste them into Kiro. No coding required - Kiro generates everything!
+
+---
+
+### 📚 Learning Prompt 1: Understanding Strands Agents
+
+**Ask Kiro** (just copy and paste this): "What is Strands and how do I build agents with it?"
+
+This helps you understand the framework before diving into code. Kiro will explain it in plain English!
+
+---
+
+### Prompt 1: Create Your Returns & Refunds Agent
+
+**What to ask Kiro** (just copy and paste this):
+
+"Create a returns and refunds agent with these features:
+- Agent name: returns_refunds_agent
+- System prompt: You are a helpful returns and refunds assistant. Help customers check return eligibility, calculate refunds, and understand policies. Be friendly and accurate.
+- Include the current_time tool
+- Add 3 custom tools:
+  - check_return_eligibility: checks if items can be returned based on purchase date and category
+  - calculate_refund_amount: calculates refund based on price, condition, and return reason
+  - format_policy_response: formats policy info in a customer-friendly way
+- Save to: 01_returns_refunds_agent.py"
+
+**What happens**: Kiro generates a complete Strands agent with all the tools ready to use.
+
+**Expected outcome**: 
+- File created: `01_returns_refunds_agent.py`
+- Contains: Complete Strands agent code with @tool decorators for all 4 tools
+- Ready to run: Can be imported and tested immediately
+
+**Why this matters**: This is your foundation agent. You'll enhance it with memory and external tools in the next steps.
+
+---
+
+### Prompt 2: Test Your Agent
+
+**What to ask Kiro** (just copy and paste this):
+
+"Create a test script called 02_test_agent.py that tests my returns agent with these questions:
+- What time is it?
+- Can I return a laptop I purchased 25 days ago?
+- Calculate my refund for a $500 item returned due to defect in like-new condition
+- Explain the return policy for electronics in a simple way"
+
+**What happens**: Kiro creates a test script that validates all your agent's tools work correctly.
+
+**Expected outcome**:
+- File created: `02_test_agent.py`
+- When run: Displays 4 test results showing each tool working
+- Output: Agent responses for each test question
+- Verification: All 4 tools execute successfully
+
+**Why this matters**: Always test before moving forward. This ensures your foundation is solid.
+
+---
+
+## Part 2: Add Memory to Remember Customers
+
+**What you'll learn**: Give your agent memory so it remembers customer preferences and past interactions - just like a good customer service rep would!
+
+**How you'll build it**: Keep vibe coding! Just tell Kiro what memory features you want, and it generates the scripts.
+
+---
+
+### 📚 Learning Prompt 2: Understanding AgentCore Memory
+
+**Ask Kiro**: "What is AgentCore Memory and how does it help my agent remember things?"
+
+Learn about the three memory types: summaries (conversation context), preferences (what customers like), and semantic facts (important details).
+
+---
+
+### Prompt 3: Create Memory Storage
+
+**What to ask Kiro**:
+
+"Create a script called 03_create_memory.py that sets up memory for my returns agent:
+- Memory name: returns_refunds_memory
+- Description: Stores customer interactions, preferences, and return history
+- Include all three memory strategies: summary, preferences, and semantic
+- Save the memory ID to memory_config.json"
+
+**What happens**: Kiro creates a script that sets up your memory storage in AWS.
+
+**Expected outcome**:
+- File created: `03_create_memory.py`
+- When run: Creates AgentCore Memory resource in AWS
+- Output: "✓ Memory created successfully! Memory ID: mem-xxxxx"
+- File created: `memory_config.json` with memory_id saved
+- Time: Takes ~10 seconds to complete
+
+**Why this matters**: Memory lets your agent provide personalized service by remembering each customer - just like how your favorite barista remembers you like oat milk!
+
+---
+
+### Prompt 4: Add Sample Customer Data
+
+**What to ask Kiro**:
+
+"Create a script called 04_seed_memory.py that adds sample customer conversations to memory:
+- Customer ID: user_001
+- Add a conversation where the customer mentions they prefer email notifications and previously returned a defective laptop
+- Add another conversation where they ask about return windows for electronics
+- Wait 30 seconds after storing so the memory system can process and extract preferences"
+
+**What happens**: Kiro creates a script that populates your memory with realistic test conversations.
+
+**Expected outcome**:
+- File created: `04_seed_memory.py`
+- When run: Stores sample conversations in memory
+- Output: "✓ Stored 2 messages successfully!"
+- Wait: Script pauses 30 seconds for memory processing
+- Output: "✓ Memory processing complete!"
+- Time: Takes ~40 seconds total (10s to store + 30s wait)
+
+**Why this matters**: You need sample data to test if memory retrieval works - can't test a memory system with an empty brain!
+
+---
+
+### Prompt 5: Test Memory Retrieval
+
+**What to ask Kiro**:
+
+"Create a script called 05_test_memory.py that:
+- Loads the memory ID from memory_config.json
+- Retrieves memories for user_001 from the preferences namespace
+- Searches for: 'customer preferences and communication'
+- Shows me what the agent remembers about this customer"
+
+**What happens**: Kiro creates a script that queries the memory to see what was learned from the conversations.
+
+**Expected outcome**:
+- File created: `05_test_memory.py`
+- When run: Queries memory for user_001
+- Output: "✓ Retrieved X memories from 'semantic' namespace"
+- Output: Displays stored preferences and return history
+- Verification: Shows the agent can recall customer information
+- Time: Takes ~5 seconds
+
+**Why this matters**: Verify memory works before integrating it with your agent.
+
+---
+
+### Prompt 6: Upgrade Agent with Memory
+
+**What to ask Kiro**:
+
+"Create a memory-enabled version of my returns agent:
+- Agent name: returns_agent_with_memory
+- System prompt: You are a personalized returns assistant who remembers customer preferences and history
+- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time**
+- Load memory ID from memory_config.json
+- Include all three memory namespaces
+- Save to: 06_memory_enabled_agent.py"
+
+**What happens**: Kiro creates an upgraded version of your agent that remembers customers while keeping all the original return/refund tools.
+
+**Expected outcome**:
+- File created: `06_memory_enabled_agent.py`
+- Contains: All 4 original tools PLUS memory integration
+- Ready for: Testing with the next prompt
+
+**Why this matters**: Your agent can now remember each customer's preferences (like "I prefer email") and past interactions (like "returned a defective laptop") while still doing all its original jobs - checking eligibility, calculating refunds, and explaining policies. It's like upgrading from a helpful assistant to a helpful assistant who actually remembers you!
+
+---
+
+### Prompt 7: Test Memory Integration
+
+**What to ask Kiro**:
+
+"Create a test script called 07_test_memory_agent.py that:
+- Imports the memory-enabled agent
+- Sets the memory ID from memory_config.json
+- Tests with user_001 asking: 'Hi! I'm thinking about returning something. What do you remember about my preferences?'
+- Shows me if the agent recalls their communication preferences and past return history"
+
+**What happens**: Kiro creates a test to verify the agent can actually access and use stored memories in conversation.
+
+**Expected outcome**:
+- File created: `07_test_memory_agent.py`
+- When run: Imports and tests the memory-enabled agent
+- Output: Agent response showing it remembers user_001's preferences
+- Output: References to past returns and customer preferences
+- Verification: Agent successfully retrieves and uses stored memories
+- Time: Takes ~10 seconds
+
+**Why this matters**: Confirm your agent can actually use the stored memories.
+
+---
+
+## Part 3: Connect External Tools via Gateway
+
+**What you'll learn**: Add a Lambda function that looks up real order details from a database, connected securely through a gateway. This is how your agent accesses external systems!
+
+**How you'll build it**: More vibe coding! Describe the Lambda function and gateway setup - Kiro handles all the AWS configuration code.
+
+---
+
+### 📚 Learning Prompt 3: Understanding AgentCore Gateway
+
+**Ask Kiro**: "What is AgentCore Gateway and how does it let my agent call external services?"
+
+Learn how gateways securely connect agents to Lambda functions, APIs, and databases - think of it as a secure phone line between your agent and other systems.
+
+---
+
+### Prompt 8: Set Up Authentication
+
+**What to ask Kiro**:
+
+"Create a script called 08_create_cognito.py that sets up authentication for my gateway:
+- Create a Cognito User Pool (this is like a secure login system)
+- Add a domain prefix for OAuth endpoints (required for token generation)
+- Add OAuth support with read/write permissions
+- Create an app client for machine-to-machine authentication (so the agent can securely call the gateway)
+- Save all the credentials to cognito_config.json including the domain URL and token endpoint"
+
+**What happens**: Kiro creates a script that sets up secure authentication with OAuth support - think of this as creating a secure ID badge system for your agent.
+
+**Expected outcome**:
+- File created: `08_create_cognito.py`
+- When run: Creates Cognito User Pool, domain, and app client in AWS
+- Output: "✓ User Pool created: pool-xxxxx"
+- Output: "✓ Domain created: returns-gateway-xxxxx"
+- Output: "✓ Resource server created with scopes"
+- Output: "✓ App client created: client-xxxxx"
+- File created: `cognito_config.json` with client_id, client_secret, domain_url, token_endpoint, discovery_url
+- Time: Takes ~20 seconds
+
+**Why this matters**: Gateways need authentication to ensure only authorized agents can call your tools. The domain is required for OAuth token endpoints to work properly.
+
+---
+
+### Prompt 9: Create Gateway Permissions
+
+**What to ask Kiro**:
+
+"Create a script called 09_create_gateway_role.py that:
+- Creates an IAM role for the gateway
+- Grants permission to invoke Lambda functions
+- Saves the role ARN to gateway_role_config.json"
+
+**What happens**: Kiro creates a script that sets up the gateway's permissions.
+
+**Expected outcome**:
+- File created: `09_create_gateway_role.py`
+- When run: Creates IAM role with Lambda invoke permissions
+- Output: "✓ Role created: GatewayExecutionRole-xxxxx"
+- Output: "✓ Policy attached: Lambda invoke permissions"
+- File created: `gateway_role_config.json` with role_arn
+- Time: Takes ~10 seconds
+
+**Why this matters**: The gateway needs permission to call Lambda on behalf of your agent.
+
+---
+
+### Prompt 10: Create Order Lookup Function
+
+**What to ask Kiro**:
+
+"Create a script called 10_create_lambda.py that creates a Lambda function:
+- Function name: OrderLookupFunction
+- Purpose: Look up order details by order ID (like ORD-001, ORD-002)
+- Returns: order_id, product_name, purchase_date, amount, and whether it's eligible for return
+- Use mock data with 3 sample orders: a recent laptop, an old phone, and a defective tablet
+- Save Lambda ARN and tool schema to lambda_config.json
+- Tool name: lookup_order"
+
+**What happens**: Kiro creates a script that deploys a Lambda function with realistic sample orders.
+
+**Expected outcome**:
+- File created: `10_create_lambda.py`
+- When run: Creates and deploys Lambda function to AWS
+- Output: "✓ Lambda function created: OrderLookupFunction"
+- Output: "✓ Function ARN: arn:aws:lambda:..."
+- File created: `lambda_config.json` with function_arn and tool_schema
+- Time: Takes ~20 seconds
+
+**Why this matters**: This external tool lets your agent access order information from a database.
+
+---
+
+### Prompt 11: Create the Gateway
+
+**What to ask Kiro**:
+
+"Create a script called 11_create_gateway.py that:
+- Creates a gateway named ReturnsRefundsGateway
+- Loads Cognito and IAM role config
+- Saves gateway ID and URL to gateway_config.json"
+
+**What happens**: Kiro creates a script that sets up your gateway.
+
+**Expected outcome**:
+- File created: `11_create_gateway.py`
+- When run: Creates AgentCore Gateway in AWS
+- Output: "✓ Gateway created successfully!"
+- Output: "Gateway ID: gw-xxxxx"
+- Output: "Gateway URL: https://xxxxx.execute-api.region.amazonaws.com"
+- File created: `gateway_config.json` with gateway_id and gateway_url
+- Time: Takes ~10 seconds
+
+**Why this matters**: The gateway is the secure bridge between your agent and Lambda function.
+
+---
+
+### Prompt 12: Connect Lambda to Gateway
+
+**What to ask Kiro**:
+
+"Create a script called 12_add_lambda_to_gateway.py that:
+- Loads gateway and Lambda config
+- Registers the OrderLookupFunction as a gateway target
+- Names it: OrderLookup"
+
+**What happens**: Kiro creates a script that connects your Lambda to the gateway.
+
+**Expected outcome**:
+- File created: `12_add_lambda_to_gateway.py`
+- When run: Registers Lambda as a gateway target
+- Output: "✓ Lambda target added successfully!"
+- Output: "Target ID: target-xxxxx"
+- Output: "Target Name: OrderLookup"
+- Time: Takes ~5 seconds
+
+**Why this matters**: This makes your Lambda function available as a tool for your agent.
+
+---
+
+### Prompt 13: Verify Gateway Setup
+
+**What to ask Kiro**:
+
+"Create a script called 13_list_gateway_targets.py that:
+- Loads the gateway ID
+- Lists all registered targets
+- Displays their status"
+
+**What happens**: Kiro creates a script to verify your gateway configuration.
+
+**Expected outcome**:
+- File created: `13_list_gateway_targets.py`
+- When run: Lists all targets registered to gateway
+- Output: "✓ Found 1 target(s):"
+- Output: "1. OrderLookup"
+- Output: "   Target ID: target-xxxxx"
+- Output: "   Status: READY"
+- Note: May show 0 targets initially due to AWS eventual consistency (this is normal)
+- Time: Takes ~5 seconds
+
+**Why this matters**: Always verify setup before integration - it's way easier to fix issues now than after everything's connected!
+
+---
+
+### Prompt 14: Create Full-Featured Agent
+
+**What to ask Kiro**:
+
+"Create the complete returns agent with memory and gateway:
+- Agent name: full_featured_returns_agent
+- System prompt: You are a returns assistant with memory and order lookup capabilities. Remember customer preferences and look up order details.
+- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time**
+- Load configs from: memory_config.json, gateway_config.json, cognito_config.json
+- Include memory and gateway integration
+- Save to: 14_full_agent.py"
+
+**What happens**: Kiro generates your production-ready agent with all features - original tools, memory, and gateway.
+
+**Expected outcome**:
+- File created: `14_full_agent.py`
+- Contains: All 4 original tools + memory + gateway integration
+- Ready to test: Agent can be imported and used immediately
+- Capabilities: Remembers customers, looks up orders, processes returns
+- Ready for: Testing with next prompt
+
+**Why this matters**: This combines everything - memory, custom tools, and external services into one complete agent.
+
+---
+
+### Prompt 15: Test Complete Agent
+
+**What to ask Kiro**:
+
+"Create a test script called 15_test_full_agent.py that:
+- Loads all configuration files
+- Sets up environment variables
+- Tests with user_001 asking: 'Hi! Can you look up my order ORD-001 and tell me if I can return it? Remember, I prefer email updates.'
+- Verifies the agent can:
+  - Remember the customer prefers email (from memory)
+  - Look up order ORD-001 details (from Lambda via gateway)
+  - Combine both to give a personalized response"
+
+**What happens**: Kiro creates a comprehensive test that shows all three capabilities working together.
+
+**Expected outcome**:
+- File created: `15_test_full_agent.py`
+- When run: Tests agent with all capabilities
+- Output: Agent response showing:
+  - Recognition of user_001 (memory working)
+  - Order details from Lambda (gateway working)
+  - Personalized response combining both
+- Verification: All systems working together
+- Time: Takes ~15 seconds
+
+**Why this matters**: Verify everything works together before deploying to production - you don't want to discover bugs when real customers are using it!
+
+---
+
+## Part 4: Deploy to Production
+
+**What you'll learn**: Deploy your agent to AgentCore Runtime - this is where your agent goes from a local script to a live, scalable service that can handle real customer requests 24/7!
+
+**How you'll build it**: Vibe coding all the way to production! Tell Kiro to deploy, and it generates all the deployment scripts and configuration.
+
+---
+
+### 📚 Learning Prompt 4: Understanding AgentCore Runtime
+
+**Ask Kiro**: "What is AgentCore Runtime and how does it deploy my agent to production?"
+
+Learn about serverless deployment (no servers to manage!), auto-scaling (handles traffic spikes automatically), and built-in monitoring.
+
+---
+
+### Prompt 16: Create Runtime Permissions
+
+**What to ask Kiro**:
+
+"Create a script called 16_create_runtime_role.py that creates an IAM role for runtime with permissions for:
+- Bedrock model access: Resource "*", Actions: InvokeModel, InvokeModelWithResponseStream
+- Memory: bedrock-agentcore:GetMemory, CreateEvent, GetLastKTurns, RetrieveMemory, ListEvents
+- CloudWatch: logs:CreateLogGroup, CreateLogStream, PutLogEvents, DescribeLogStreams
+- X-Ray: xray:PutTraceSegments, PutTelemetryRecords
+- Gateway: bedrock-agentcore:InvokeGateway, GetGateway, ListGatewayTargets
+- ECR: ecr:GetAuthorizationToken, BatchCheckLayerAvailability, GetDownloadUrlForLayer, BatchGetImage
+- Trust Policy: bedrock-agentcore.amazonaws.com
+- Save role ARN to runtime_execution_role_config.json"
+
+**What happens**: Kiro creates a script that sets up runtime permissions.
+
+**Expected outcome**:
+- File created: `16_create_runtime_role.py`
+- When run: Creates IAM role with all required permissions
+- Output: "✓ Role created: AgentCoreRuntimeExecutionRole"
+- Output: "✓ Policy created: AgentCoreRuntimeExecutionPolicy"
+- Output: "✓ Policy attached to role"
+- Output: "✓ Role is ready"
+- File created: `runtime_execution_role_config.json` with role_arn
+- Time: Takes ~20 seconds
+
+**Why this matters**: Runtime needs these permissions to run your agent and access AWS services.
+
+---
+
+### Prompt 17: Prepare Agent for Runtime
+
+**What to ask Kiro**:
+
+"Create the runtime-ready version of my agent:
+- Agent name: returns_agent_runtime
+- System prompt: Production returns assistant with full memory and gateway capabilities
+- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time**
+- Load all configs: memory, gateway, cognito
+- Include memory and gateway integration
+- Add comprehensive error handling to catch and log any failures
+- Save to: 17_runtime_agent.py"
+
+**What happens**: Kiro generates a production-optimized agent with all original tools plus memory and gateway.
+
+**Expected outcome**:
+- File created: `17_runtime_agent.py`
+- Contains: All 4 original tools + memory + gateway + @app.entrypoint decorator
+- Structure: BedrockAgentCoreApp format for runtime deployment
+- Ready for: Deployment to AgentCore Runtime
+- Note: This file is NOT run directly - it's deployed by the next script
+
+**Why this matters**: Runtime agents need specific structure and configuration while maintaining all functionality.
+
+---
+
+### Prompt 18: Create Dependencies File
+
+**What to ask Kiro**:
+
+"Create a requirements.txt file for my agent with these packages:
+- strands-agents (latest version)
+- strands-agents-tools (latest version)
+- bedrock-agentcore (latest version)
+- boto3 (latest version)
+- Any other dependencies needed for the runtime agent"
+
+**What happens**: Kiro creates the dependencies file that tells AWS which Python packages to install.
+
+**Expected outcome**:
+- Output: "✓ Requirements file created"
+- File created: `requirements.txt` with all dependencies
+- Contains: strands, bedrock-agentcore, boto3, etc.
+- Time: Takes ~5 seconds
+
+**Why this matters**: Runtime needs to know which packages to install.
+
+---
+
+### Prompt 19: Deploy to Production
+
+**What to ask Kiro**:
+
+"Create a script called 19_deploy_agent.py that:
+- Loads all configuration files (memory, gateway, cognito, runtime execution role)
+- Configures runtime deployment settings:
+  - Entrypoint: 17_runtime_agent.py
+  - Agent name: returns_refunds_agent
+  - Execution role from config
+  - Cognito authentication
+- Sets environment variables for memory, gateway, and Cognito
+- Deploys to AgentCore Runtime
+- Saves agent ARN to runtime_config.json"
+
+**What happens**: Kiro creates a script that configures and deploys your agent to AWS in one step.
+
+**Expected outcome**:
+- File created: `19_deploy_agent.py`
+- When run: Starts deployment process
+- Output: "LAUNCHING AGENT TO AGENTCORE RUNTIME"
+- Output: "⏱️ Expected time: 5-10 minutes"
+- Output: "☕ Grab a coffee while the deployment runs..."
+- Process: Creates CodeBuild project, builds Docker container, pushes to ECR, deploys
+- Output: "✓ Agent deployment initiated!"
+- Output: "Agent ARN: arn:aws:bedrock-agentcore:..."
+- File created: `runtime_config.json` with agent_arn
+- Time: Takes 5-10 minutes
+
+**Why this matters**: This is the moment your agent goes live!
+
+---
+
+### Prompt 20: Monitor Deployment
+
+**What to ask Kiro**:
+
+"Create a script called 20_check_status.py that:
+- Checks deployment status
+- Monitors until READY or FAILED
+- Displays current state"
+
+**What happens**: Kiro creates a script to monitor your deployment.
+
+**Expected outcome**:
+- File created: `20_check_status.py`
+- When run: Checks agent deployment status
+- Output (if still deploying): "⏳ Agent deployment in progress..."
+- Output (if ready): "✓ Agent is READY to receive requests!"
+- Output (if failed): "✗ Agent deployment failed! Check CloudWatch logs"
+- Shows: Endpoint details and status
+- Time: Takes ~5 seconds per check
+- Note: Run multiple times until status shows READY
+
+**Why this matters**: Deployment takes 5-10 minutes - this script lets you track progress instead of wondering if it's working!
+
+---
+
+### Prompt 21: Test Production Agent
+
+**What to ask Kiro**:
+
+"Create a script called 21_invoke_agent.py that:
+- Loads Cognito credentials from cognito_config.json
+- Gets an OAuth token for authentication
+- Invokes the deployed agent with user_001 asking: 'Can you look up my order ORD-001 and help me with a return?'
+- Displays the full response"
+
+**What happens**: Kiro creates a script to test your live production agent with a realistic customer query.
+
+**Expected outcome**:
+- File created: `21_invoke_agent.py`
+- When run: Invokes production agent
+- Output: "✓ OAuth token obtained"
+- Output: "Invoking agent..."
+- Output: "✓ AGENT RESPONSE"
+- Shows: Complete agent response with refund policy information
+- Verification: Production agent is working correctly
+- Time: Takes ~10 seconds
+
+**Why this matters**: Verify your production agent works correctly.
+
+---
+
+## Part 5: Monitor and Debug
+
+**What you'll learn**: Access monitoring dashboards and logs to track performance and debug issues - because even the best agents need health checkups!
+
+---
+
+### 📚 Learning Prompt 5: Understanding Observability
+
+**Ask Kiro**: "How do I monitor my deployed agent and view its logs?"
+
+Learn about CloudWatch dashboards (your agent's health monitor), traces (see exactly what your agent is doing), and log analysis (debug when things go wrong).
+
+---
+
+### Prompt 22: Access Monitoring Dashboard
+
+**What to ask Kiro**:
+
+"Create a script called 22_get_dashboard.py that:
+- Gets the CloudWatch GenAI Observability dashboard URL
+- Displays the link to access monitoring"
+
+**What happens**: Kiro creates a script that gives you the dashboard URL.
+
+**Expected outcome**:
+- File created: `22_get_dashboard.py`
+- When run: Retrieves dashboard URL
+- Output: "CloudWatch GenAI Observability Dashboard"
+- Output: "URL: https://console.aws.amazon.com/cloudwatch/..."
+- Shows: Direct link to monitoring dashboard
+- Time: Takes ~2 seconds
+
+**Why this matters**: The dashboard shows performance metrics, request traces, and usage patterns - it's like a fitness tracker for your agent!
+
+---
+
+### Prompt 23: View Agent Logs
+
+**What to ask Kiro**:
+
+"Create a script called 23_view_logs.py that:
+- Loads agent ARN from runtime_config.json
+- Retrieves the last hour of logs
+- Displays recent agent activity"
+
+**What happens**: Kiro creates a script to view your agent's logs.
+
+**Expected outcome**:
+- File created: `23_view_logs.py`
+- When run: Fetches recent CloudWatch logs
+- Output: "Retrieving logs for agent: arn:aws:..."
+- Output: "✓ Retrieved X log events"
+- Shows: Recent agent invocations, tool calls, and responses
+- Time: Takes ~5 seconds
+
+**Why this matters**: Logs help you debug issues and understand agent behavior - they're like a diary of everything your agent does!
+
+---
+
+## Part 6: Clean Up
+
+**What you'll learn**: Remove all AWS resources to avoid ongoing costs - because nobody likes surprise bills!
+
+---
+
+### Prompt 24: Delete AWS Resources
+
+**What to ask Kiro**:
+
+"Create a script called 24_cleanup_aws.py that safely deletes all the AWS resources we created:
+- Runtime agent (the deployed agent)
+- Gateway and its targets (the secure connection)
+- Memory resource (stored customer data)
+- Lambda function and its IAM roles (the order lookup function)
+- Cognito user pool (authentication system)
+- IAM roles (all permissions we created)
+- ECR repository (Docker container storage)
+- Include a 5-second warning before deletion so I don't accidentally delete everything
+- Handle missing resources gracefully (don't error if something's already gone)"
+
+**What happens**: Kiro creates a comprehensive cleanup script that removes everything in the right order.
+
+**Expected outcome**:
+- File created: `24_cleanup_aws.py`
+- When run: Shows 5-second warning countdown
+- Output: "⚠️ WARNING: This will delete all AWS resources"
+- Output: "Deleting runtime agent..."
+- Output: "✓ Runtime agent deleted"
+- Output: "Deleting gateway targets..."
+- Output: "✓ Gateway deleted"
+- Output: "Deleting memory..."
+- Output: "✓ Memory deleted"
+- Output: "Deleting Lambda..."
+- Output: "✓ Lambda deleted"
+- Output: "Deleting IAM roles..."
+- Output: "✓ All AWS resources cleaned up"
+- Time: Takes ~60 seconds
+- Note: Handles missing resources gracefully (no errors if already deleted)
+
+**Why this matters**: Avoid unexpected AWS charges by cleaning up workshop resources - AWS bills can add up fast if you leave things running!
+
+**WARNING**: This permanently deletes everything. Make sure you've saved any important data!
+
+---
+
+### Prompt 25: Clean Up Local Files
+
+**What to ask Kiro**:
+
+"Create a script called 25_cleanup_files.py that deletes:
+- All Python scripts (01-25)
+- All config JSON files
+- Runtime configuration files
+- Docker files
+- Requirements file
+- Generated agent files
+- Include a 5-second warning
+- Handle missing files gracefully"
+
+**What happens**: Kiro creates a script to clean up your workspace.
+
+**Expected outcome**:
+- File created: `25_cleanup_files.py`
+- When run: Shows 5-second warning countdown
+- Output: "⚠️ WARNING: This will delete all local files"
+- Output: "Deleting Python scripts..."
+- Output: "✓ Deleted 25 Python files"
+- Output: "Deleting config files..."
+- Output: "✓ Deleted 8 JSON files"
+- Output: "Deleting runtime files..."
+- Output: "✓ Workspace cleaned up"
+- Time: Takes ~5 seconds
+- Result: Clean workspace ready for next workshop
+
+**Why this matters**: Return your workspace to a clean state after the workshop - start fresh next time without old files cluttering things up!
+
+---
+
+## 🎉 Congratulations!
+
+You've built a complete, production-ready returns and refunds agent with:
+- ✅ Custom tools for returns processing
+- ✅ Memory to remember customers
+- ✅ External order lookup via gateway
+- ✅ Production deployment on AgentCore Runtime
+- ✅ Monitoring and observability
+
+**And you did it all through vibe coding!** No manual coding, no wrestling with syntax errors, no debugging cryptic error messages. Just natural language conversations with Kiro that generated production-ready code.
+
+Your agent can now:
+- Check return eligibility
+- Calculate refunds
+- Look up order details
+- Remember customer preferences
+- Provide personalized service
+
+---
+
+## Quick Reference
+
+**Configuration Files Created**:
+- `memory_config.json` - Memory ID
+- `cognito_config.json` - Authentication
+- `gateway_role_config.json` - Gateway permissions
+- `lambda_config.json` - Lambda details
+- `gateway_config.json` - Gateway connection
+- `runtime_execution_role_config.json` - Runtime permissions
+- `runtime_config.json` - Deployed agent ARN
+
+**Key Concepts**:
+- **Strands**: Framework for building AI agents
+- **Memory**: Stores customer preferences and history
+- **Gateway**: Secure bridge to external services
+- **Runtime**: Serverless production deployment
+- **Observability**: Monitoring and debugging tools
+
+---
+
+## Need Help?
+
+- **Learning prompts**: Ask Kiro to explain concepts in plain English
+- **Documentation**: Use MCP servers to search docs
+- **Debugging**: Check logs and monitoring dashboard
+- **Issues**: Review error messages and retry
+- **Stuck?**: Just ask Kiro "Can you help me with [problem]?" - it's that simple!
+
+## What You Just Experienced
+
+This workshop showcased **vibe coding** - a new way to build software where you describe what you want in natural language, and AI generates production-ready code. No syntax to memorize, no boilerplate to write, no stack traces to debug. Just ideas to working code.
+
+You went from zero to a production AI agent in 25 prompts, all through conversation. That's the power of vibe coding with Kiro!
+
+Happy building! 🚀
