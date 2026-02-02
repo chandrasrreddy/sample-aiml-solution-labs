@@ -84,6 +84,7 @@ This helps you understand the framework before diving into code. Kiro will expla
 **What to ask Kiro** (just copy and paste this):
 
 "Create a test script called 02_test_agent.py that tests my returns agent with these questions:
+- Import run_agent from 01_returns_refunds_agent.py using importlib
 - What time is it?
 - Can I return a laptop I purchased 25 days ago?
 - Calculate my refund for a $500 item returned due to defect in like-new condition
