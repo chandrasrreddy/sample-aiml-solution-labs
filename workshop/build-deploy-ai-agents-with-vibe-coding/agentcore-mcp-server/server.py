@@ -620,32 +620,54 @@ async def generate_strands_agent(
     system_prompt: str,
     tools: Optional[list[str]] = None,
     custom_tools: Optional[list[dict]] = None,
+    include_memory: bool = False,
+    memory_namespaces: Optional[list[str]] = None,
+    include_kb: bool = False,
+    include_gateway: bool = False,
     model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     temperature: float = 0.3,
     region: str = "us-east-1"
 ) -> dict:
-    """Generate standalone Strands Agent Python code with specified tools.
+    """Generate standalone Strands Agent Python code with specified tools and integrations.
     
     Creates a complete Strands agent with built-in and custom tools using
-    @tool decorator pattern.
+    @tool decorator pattern. Supports optional integrations with AgentCore Memory,
+    Knowledge Base, and Gateway.
     
     Args:
         agent_name: Name for the agent (used in filename)
         system_prompt: System prompt for the agent
         tools: List of built-in tool names (e.g., ['retrieve', 'current_time'])
         custom_tools: List of custom tool definitions with name, description, and code
+        include_memory: Enable AgentCore Memory integration (default: False)
+        memory_namespaces: Memory namespaces to retrieve from (default: ['semantic', 'preferences', 'summary'])
+        include_kb: Enable Knowledge Base integration via retrieve tool (default: False)
+        include_gateway: Enable Gateway integration for MCP tools (default: False)
         model_id: Bedrock model ID (default: claude-sonnet-4-5)
         temperature: Model temperature 0.0-1.0 (default: 0.3)
         region: AWS region (default: us-east-1)
     
     Returns:
         dict: Generated agent code with filename and instructions
+    
+    Example:
+        # Generate agent with memory and gateway
+        generate_strands_agent(
+            agent_name="customer_service_agent",
+            system_prompt="You are a helpful customer service agent",
+            include_memory=True,
+            include_gateway=True
+        )
     """
     return await handle_generate_strands_agent({
         "agent_name": agent_name,
         "system_prompt": system_prompt,
         "tools": tools or [],
         "custom_tools": custom_tools or [],
+        "include_memory": include_memory,
+        "memory_namespaces": memory_namespaces or ["semantic", "preferences", "summary"],
+        "include_kb": include_kb,
+        "include_gateway": include_gateway,
         "model_id": model_id,
         "temperature": temperature,
         "region": region
