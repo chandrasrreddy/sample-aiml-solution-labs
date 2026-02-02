@@ -296,7 +296,8 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 - Add a domain prefix for OAuth endpoints (required for token generation)
 - Add OAuth support with read/write permissions
 - Create an app client for machine-to-machine authentication (so the agent can securely call the gateway)
-- Save all the credentials to cognito_config.json including the domain URL and token endpoint"
+- Save all the credentials to cognito_config.json including the domain URL and token endpoint
+- **CRITICAL**: Use the IDP-based discovery URL format: https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/openid-configuration (NOT the hosted UI domain format)"
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -886,6 +887,7 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 - Docker files
 - Requirements file
 - Generated agent files
+- .bedrock_agentcore.yaml file
 - Include a 5-second warning
 - Handle missing files gracefully"
 
