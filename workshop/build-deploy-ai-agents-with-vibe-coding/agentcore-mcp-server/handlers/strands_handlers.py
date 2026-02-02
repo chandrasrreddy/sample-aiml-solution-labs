@@ -244,6 +244,20 @@ def run_agent(user_input: str, session_id: str = SESSION_ID, actor_id: str = ACT
     
 '''
     
+    # Configure memory FIRST (before gateway logic)
+    if include_memory:
+        code += '''    # Configure memory
+    memory_id = os.environ.get("MEMORY_ID")
+    if not memory_id:
+        print("⚠️  MEMORY_ID not set - agent will run without memory")
+        session_manager = None
+    else:
+        session_manager = create_memory_session_manager(memory_id, session_id, actor_id)
+        print(f"✓ Memory configured: {memory_id}")
+    
+'''
+    
+    # Handle gateway integration
     if include_gateway:
         code += '''    # Try to add gateway tools
     mcp_client = create_mcp_client()
@@ -256,32 +270,10 @@ def run_agent(user_input: str, session_id: str = SESSION_ID, actor_id: str = ACT
                 gateway_tools = list(mcp_client.list_tools_sync())
                 print(f"✓ Loaded {len(gateway_tools)} gateway tools")
                 
-                # Add gateway tools to custom tools
-                all_tools = custom_tools + gateway_tools
-'''
-    else:
-        code += '''    all_tools = custom_tools
-'''
-    
-    if include_memory:
-        code += '''    
-    # Configure memory
-    memory_id = os.environ.get("MEMORY_ID")
-    if not memory_id:
-        print("⚠️  MEMORY_ID not set - agent will run without memory")
-        session_manager = None
-    else:
-        session_manager = create_memory_session_manager(memory_id, session_id, actor_id)
-        print(f"✓ Memory configured: {memory_id}")
-    
-'''
-    
-    # Create agent with appropriate configuration
-    if include_gateway:
-        code += '''                # Create agent with all tools and memory
+                # Create agent with gateway tools
                 agent = Agent(
                     model=bedrock_model,
-                    tools=all_tools,
+                    tools=custom_tools + gateway_tools,
                     system_prompt=system_prompt'''
         
         if include_memory:
@@ -296,12 +288,11 @@ def run_agent(user_input: str, session_id: str = SESSION_ID, actor_id: str = ACT
         except Exception as e:
             print(f"⚠️  Failed to use gateway tools: {e}")
             # Fall back to agent without gateway tools
-            all_tools = custom_tools
     
     # Create agent without gateway tools (fallback or no gateway)
     agent = Agent(
         model=bedrock_model,
-        tools=all_tools,
+        tools=custom_tools,
         system_prompt=system_prompt'''
         
         if include_memory:
@@ -315,10 +306,11 @@ def run_agent(user_input: str, session_id: str = SESSION_ID, actor_id: str = ACT
     return response.message["content"][0]["text"]
 '''
     else:
+        # No gateway - simple agent creation
         code += '''    # Create agent
     agent = Agent(
         model=bedrock_model,
-        tools=all_tools,
+        tools=custom_tools,
         system_prompt=system_prompt'''
         
         if include_memory:
