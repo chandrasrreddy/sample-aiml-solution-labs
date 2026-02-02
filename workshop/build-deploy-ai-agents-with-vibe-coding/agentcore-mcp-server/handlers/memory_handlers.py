@@ -16,6 +16,29 @@ async def handle_memory_create(args: Dict) -> Dict:
     description = args.get("description", "")
     strategies = args["strategies"]
     
+    # Transform strategies to boto3 tagged union format
+    # Input format: [{"name": "summary", "namespaces": [...]}]
+    # Output format: [{"summaryMemoryStrategy": {"name": "summary", "namespaces": [...]}}]
+    transformed_strategies = []
+    for strategy in strategies:
+        strategy_name = strategy.get("name", "").lower()
+        
+        if strategy_name == "summary":
+            transformed_strategies.append({
+                "summaryMemoryStrategy": strategy
+            })
+        elif strategy_name == "preferences":
+            transformed_strategies.append({
+                "userPreferenceMemoryStrategy": strategy
+            })
+        elif strategy_name == "semantic":
+            transformed_strategies.append({
+                "semanticMemoryStrategy": strategy
+            })
+        else:
+            # Unknown strategy type - pass through as-is
+            transformed_strategies.append(strategy)
+    
     # Generate Python script code
     code = f'''#!/usr/bin/env python3
 """
@@ -27,8 +50,8 @@ This script creates an AgentCore Memory resource with memory strategies.
 import json
 from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager
 
-# Define memory strategies
-strategies = {json.dumps(strategies, indent=4)}
+# Define memory strategies in boto3 tagged union format
+strategies = {json.dumps(transformed_strategies, indent=4)}
 
 # Create memory manager
 memory_manager = MemoryManager(region_name='{region}')

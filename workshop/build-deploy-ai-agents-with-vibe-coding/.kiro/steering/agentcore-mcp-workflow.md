@@ -27,8 +27,8 @@ This steering file contains critical instructions that apply to ALL AgentCore MC
 - ❌ WRONG (guessing): `bedrock-agentcore` client with `delete_runtime(runtimeIdentifier=...)`
 
 **Example - Memory API Methods**:
-- ✅ CORRECT (from MCP server): Use `MemoryManager` from `bedrock_agentcore_starter_toolkit.operations.memory.manager`
-- ❌ WRONG (guessing): Use `bedrock_agentcore.delete_memory(memoryIdentifier=...)`
+- ✅ CORRECT (from MCP server): Use `MemoryManager` from `bedrock_agentcore_starter_toolkit.operations.memory.manager` with strategies in tagged union format: `[{"summaryMemoryStrategy": {"name": "summary", "namespaces": [...]}}]`
+- ❌ WRONG (guessing): Use `bedrock_agentcore.delete_memory(memoryIdentifier=...)` or pass strategies without tagged union wrapper
 
 **Files to reference**:
 - Gateway APIs: `agentcore-mcp-server/handlers/gateway_handlers.py`
