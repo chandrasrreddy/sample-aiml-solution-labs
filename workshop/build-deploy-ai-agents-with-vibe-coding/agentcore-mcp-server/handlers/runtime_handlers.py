@@ -11,7 +11,7 @@ import json
 async def handle_runtime_configure(args: Dict) -> Dict:
     """Generate script to configure AgentCore Runtime deployment settings"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     entrypoint = args["entrypoint"]
     agent_name = args["agent_name"]
     execution_role = args["execution_role"]
@@ -75,7 +75,7 @@ print("  Next step: Run launch script to deploy the agent")
 async def handle_runtime_launch(args: Dict) -> Dict:
     """Generate script to deploy agent to AgentCore Runtime"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     env_vars = args["env_vars"]
     auto_update_on_conflict = args.get("auto_update_on_conflict", True)
     
@@ -249,7 +249,7 @@ print("\\n" + "=" * 80)
 async def handle_runtime_status(args: Dict) -> Dict:
     """Generate script to check AgentCore Runtime deployment status"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     
     # Generate Python script code
     code = f'''#!/usr/bin/env python3
@@ -353,7 +353,7 @@ else:
 async def handle_runtime_invoke(args: Dict) -> Dict:
     """Generate script to invoke a deployed AgentCore Runtime agent"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     payload = args.get("payload", {"actor_id": "user_001", "prompt": "What do you know about me?"})
     
     # Generate Python script code
@@ -494,7 +494,7 @@ except Exception as e:
 async def handle_runtime_delete(args: Dict) -> Dict:
     """Generate script to delete an AgentCore Runtime agent deployment"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     
     # Generate Python script code using boto3 (like reference notebook)
     code = f'''#!/usr/bin/env python3

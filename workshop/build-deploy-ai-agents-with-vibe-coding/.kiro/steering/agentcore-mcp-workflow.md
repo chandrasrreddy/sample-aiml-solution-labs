@@ -2,557 +2,402 @@
 inclusion: always
 ---
 
-# AgentCore MCP Workflow Guidelines
-
-This steering file contains critical instructions that apply to ALL AgentCore MCP workflow prompts.
-
-## CRITICAL WORKFLOW RULES
-
-### ⚠️ CRITICAL: ALWAYS REFERENCE MCP SERVER CODE FOR API METHODS
-
-**BEFORE creating ANY script that uses boto3 AWS APIs (Gateway, Runtime, Memory, etc.):**
-
-1. **CHECK THE MCP SERVER HANDLERS FIRST** - The MCP server code at `agentcore-mcp-server/handlers/` contains the CORRECT boto3 API methods
-2. **USE THE SAME API METHODS** - Copy the exact client names and method calls from the MCP handlers
-3. **DO NOT GUESS** - Never assume API method names without checking the MCP server code first
-
-**Why this matters**: The MCP server handlers are based on the reference notebook and use the correct boto3 API methods. If you guess or assume API methods, you will create broken code that fails at runtime.
-
-**Example - Gateway API Methods**:
-- ✅ CORRECT (from MCP server): `bedrock-agentcore-control` client with `list_gateway_targets()`, `delete_gateway_target(targetId=...)`
-- ❌ WRONG (guessing): `bedrock-agentcore` client with `list_targets()`, `delete_target(targetIdentifier=...)`
-
-**Example - Runtime API Methods**:
-- ✅ CORRECT (from MCP server): `bedrock-agentcore-control` client with `delete_agent_runtime(agentRuntimeId=...)`
-- ❌ WRONG (guessing): `bedrock-agentcore` client with `delete_runtime(runtimeIdentifier=...)`
-
-**Example - Memory API Methods**:
-- ✅ CORRECT (from MCP server): Use `MemoryManager` from `bedrock_agentcore_starter_toolkit.operations.memory.manager` with strategies in tagged union format: `[{"summaryMemoryStrategy": {"name": "summary", "namespaces": [...]}}]`
-- ❌ WRONG (guessing): Use `bedrock_agentcore.delete_memory(memoryIdentifier=...)` or pass strategies without tagged union wrapper
-
-**Files to reference**:
-- Gateway APIs: `agentcore-mcp-server/handlers/gateway_handlers.py`
-- Runtime APIs: `agentcore-mcp-server/handlers/runtime_handlers.py`
-- Memory APIs: `agentcore-mcp-server/handlers/memory_handlers.py`
-- Identity APIs: `agentcore-mcp-server/handlers/identity_handlers.py`
-- Observability APIs: `agentcore-mcp-server/handlers/observability_handlers.py`
-- Strands Agent Generation: `agentcore-mcp-server/handlers/strands_handlers.py`
-
-**ALWAYS**:
-1. Read the relevant MCP handler file BEFORE writing boto3 code
-2. Copy the exact client initialization and method calls
-3. Use the same parameter names and structure
-
-**NEVER**:
-1. Guess API method names
-2. Assume parameter names without checking
-3. Create scripts without referencing the MCP server code
-
-### LEARNING PROMPTS - MCP SERVER REFERENCE
-
-**For all learning and educational prompts, ALWAYS refer to the appropriate MCP server:**
-
-- **Strands learning prompts** (e.g., "What is Strands?", "How do I build agents?", "Explain @tool decorator"):
-  - Refer to the `strands-agents` MCP server
-  - This server contains comprehensive Strands documentation and examples
-  
-- **AgentCore learning prompts** (e.g., "What is AgentCore?", "How does Memory work?", "Explain Gateway"):
-  - Refer to the `bedrock-agentcore-mcp-server` MCP server
-  - This server contains AgentCore documentation, architecture, and best practices
-
-**DO NOT** manually explain concepts when MCP servers have authoritative documentation. Instead, use the MCP server tools to retrieve accurate, up-to-date information.
-
-### MANDATORY FIRST STEP - ALWAYS USE MCP TOOLS
-
-**You have access to AgentCore MCP tools through Kiro's MCP integration!**
-
-The MCP server is configured at: `agentcore-mcp-server/mcp_server.py`
-
-**BEFORE creating ANY AgentCore resource or Strands agent code:**
-
-1. **Identify which MCP tool to use** from the available tools:
-   
-   **AGENT GENERATION TOOLS - CRITICAL DISTINCTION:**
-   - `mcp_aws_bedrock_agentcore_generate_strands_agent` 
-     - **USE FOR**: ALL agent creation EXCEPT final runtime deployment
-     - **INCLUDES**: Simple agents, adding memory, gateway integration, testing, development
-     - **CREATES**: Standard Strands agent with `Agent()` class, `run_agent()` function
-     - **NO RUNTIME**: Does NOT include `@app.entrypoint` or BedrockAgentCoreApp
-     - **WHEN**: Any agent creation task that is NOT deploying to AgentCore Runtime
-     - **EXAMPLES**: 
-       - "Create agent with memory"
-       - "Add gateway integration to agent"
-       - "Test agent with gateway tools"
-       - "Create agent for local testing"
-   
-   - `mcp_aws_bedrock_agentcore_generate_agentcore_runtime_agent`
-     - **USE FOR**: ONLY when deploying to AgentCore Runtime (final step)
-     - **CREATES**: Agent with `@app.entrypoint` decorator and BedrockAgentCoreApp
-     - **RUNTIME READY**: Includes all deployment configuration
-     - **WHEN**: Prompt explicitly says "deploy to runtime" or "deploy to AgentCore Runtime"
-     - **NOT FOR**: Testing, development, gateway integration testing, memory testing
-   
-   **OTHER MCP TOOLS:**
-   
-   **Agent Generation:**
-   - `mcp_aws_bedrock_agentcore_generate_strands_agent` - Generate standalone Strands agent
-   - `mcp_aws_bedrock_agentcore_generate_agentcore_runtime_agent` - Generate runtime-ready agent
-   
-   **Identity/IAM:**
-   - `mcp_aws_bedrock_agentcore_agentcore_create_runtime_execution_rol` - Generate IAM execution role script
-   
-   **Memory:**
-   - `mcp_aws_bedrock_agentcore_agentcore_memory_create` - Create memory resource
-   - `mcp_aws_bedrock_agentcore_agentcore_memory_create_event` - Store conversation messages
-   - `mcp_aws_bedrock_agentcore_agentcore_memory_retrieve` - Retrieve memories
-   - `mcp_aws_bedrock_agentcore_agentcore_memory_delete` - Delete memory resource
-   
-   **Gateway:**
-   - `mcp_aws_bedrock_agentcore_agentcore_gateway_create` - Create gateway
-   - `mcp_aws_bedrock_agentcore_agentcore_gateway_add_lambda_target` - Add Lambda target
-   - `mcp_aws_bedrock_agentcore_agentcore_gateway_list_targets` - List gateway targets
-   - `mcp_aws_bedrock_agentcore_agentcore_gateway_delete_target` - Delete gateway target
-   - `mcp_aws_bedrock_agentcore_agentcore_gateway_delete` - Delete gateway
-   
-   **Runtime:**
-   - `mcp_aws_bedrock_agentcore_agentcore_runtime_configure` - Configure runtime deployment
-   - `mcp_aws_bedrock_agentcore_agentcore_runtime_launch` - Deploy to runtime
-   - `mcp_aws_bedrock_agentcore_agentcore_runtime_status` - Check deployment status
-   - `mcp_aws_bedrock_agentcore_agentcore_runtime_invoke` - Invoke deployed agent
-   - `mcp_aws_bedrock_agentcore_agentcore_runtime_delete` - Delete runtime deployment
-   
-   **Observability:**
-   - `mcp_aws_bedrock_agentcore_agentcore_observability_get_dashboard_` - Get dashboard URL
-   - `mcp_aws_bedrock_agentcore_agentcore_observability_get_logs_info` - Get log group info
-   - `mcp_aws_bedrock_agentcore_agentcore_observability_get_recent_log` - Retrieve recent logs
-
-2. **Read the tool description** to see example code and understand parameters
-
-3. **Call the MCP tool** with the appropriate parameters
-
-4. **Extract the result** and save to files as needed
-
-### DECISION TREE: Which Agent Generation Tool?
-
-```
-Is the prompt asking to DEPLOY TO AGENTCORE RUNTIME?
-├─ YES → Use generate_agentcore_runtime_agent
-│         (ONLY keyword: "deploy to runtime" or "deploy to AgentCore Runtime")
-│
-└─ NO → Use generate_strands_agent
-          (EVERYTHING ELSE including:)
-          - Create agent
-          - Add memory
-          - Add gateway integration
-          - Test gateway tools
-          - Test locally
-          - Development
-          - Any testing or integration work
-```
-
-**ABSOLUTE RULE**: 
-- Use `generate_strands_agent` for ALL agent creation tasks
-- Use `generate_agentcore_runtime_agent` ONLY when prompt says "deploy to runtime"
-- Gateway integration testing = use `generate_strands_agent`
-- Memory integration testing = use `generate_strands_agent`
-- Local development = use `generate_strands_agent`
-
-### Task Type Detection
-
-**Type 1: Code/Script Generation (Strands Agents & AgentCore Resources)**
-- **When**: Prompt asks to generate Strands agent code OR create AgentCore resource scripts
-- **What to do**: 
-  1. Call the appropriate MCP generation tool (e.g., `mcp_aws_bedrock_agentcore_generate_strands_agent`, `mcp_aws_bedrock_agentcore_generate_memory_script`)
-  2. The tool returns JSON with `code`, `filename`, and `instructions`
-  3. Save the `code` to the `filename` specified in the prompt
-  4. **IMPORTANT**: The file contains the generated code/script, NOT a script that calls the MCP tool
-  5. User will run the script to execute operations
-
-**Type 2: AWS Resource Creation (Cognito/IAM/Lambda)**
-- **When**: Prompt says "There is NO MCP tool" or mentions Cognito/IAM/Lambda
-- **What to do**: Create Python scripts using boto3 directly
-- **Why**: No MCP tools exist for these operations
-
-## Example Workflows
-
-**Example 1: Generate Strands Agent (Type 1)**
-
-When the prompt says "Create a file called `01_generate_agent.py`":
-1. **YOU (Kiro)** call `mcp_aws_bedrock_agentcore_generate_strands_agent`
-2. Extract `code` from the tool response
-3. Save `code` to `01_generate_agent.py`
-4. File contains generated Strands agent code
-
-**Example 2: Generate AgentCore Memory Script (Type 1)**
-
-When the prompt says "Create a script called `03_create_agentcore_memory.py`":
-1. **YOU (Kiro)** call `mcp_aws_bedrock_agentcore_generate_memory_script` (if available)
-2. Extract `code` from the tool response
-3. Save `code` to `03_create_agentcore_memory.py`
-4. File contains a Python script that user will run
-
-**Example 3: Create AWS Resource Script (Type 2)**
-
-When the prompt says "Create a script called `08_create_cognito_user_pool.py`":
-1. Create a Python script using boto3 (no MCP tool available)
-2. Script creates AWS resource and saves config to JSON files
-
-## ABSOLUTE PROHIBITIONS
-
-**DO NOT**:
-- Manually create Strands agent code or AgentCore scripts - ALWAYS use MCP generation tools
-- Execute operations directly - always generate scripts that users can run
-- Skip checking for MCP script generators
-- Guess library functions or parameters
-
-**ALWAYS**:
-- For Type 1 (Strands/AgentCore): Call MCP tool to generate code/script, save the generated code
-- For Type 2 (AWS resources): Create scripts using boto3
-- Generate scripts that users run, not execute operations directly
-- Save results to config files as specified in prompts
-
-## Configuration File Flow
-
-Configuration files are created and reused throughout the workflow:
-
-- `memory_config.json` - Stores memory_id for agent personalization
-- `cognito_config.json` - Stores authentication credentials
-- `gateway_role_config.json` - Stores gateway IAM permissions
-- `lambda_config.json` - Stores Lambda function details
-- `gateway_config.json` - Stores gateway connection info
-- `runtime_execution_role_config.json` - Stores runtime IAM permissions
-- `runtime_config.json` - Stores deployed agent ARN
-
-## Task Type Quick Reference
-
-| Prompt Topic | Task Type | Approach |
-|--------------|-----------|----------|
-| Generate simple agent | Type 1 | `mcp_aws_bedrock_agentcore_generate_strands_agent` |
-| Add memory to agent | Type 1 | `mcp_aws_bedrock_agentcore_generate_strands_agent` (with memory params) |
-| Add gateway integration | Type 1 | `mcp_aws_bedrock_agentcore_generate_strands_agent` (with gateway params) |
-| Test gateway tools | Type 1 | `mcp_aws_bedrock_agentcore_generate_strands_agent` |
-| Deploy to AgentCore Runtime | Type 1 | `mcp_aws_bedrock_agentcore_generate_agentcore_runtime_agent` |
-| Test agent locally | Type 2 | No MCP tool - import and test |
-| Create Cognito/IAM/Lambda | Type 2 | No MCP tool - use boto3 |
-| Create IAM execution role | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_create_runtime_execution_rol` |
-| Create memory resource | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_memory_create` |
-| Store conversations | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_memory_create_event` |
-| Retrieve memories | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_memory_retrieve` |
-| Delete memory | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_memory_delete` |
-| Create gateway | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_gateway_create` |
-| Add Lambda to gateway | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_gateway_add_lambda_target` |
-| List gateway targets | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_gateway_list_targets` |
-| Delete gateway target | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_gateway_delete_target` |
-| Delete gateway | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_gateway_delete` |
-| Configure runtime | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_runtime_configure` |
-| Launch to runtime | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_runtime_launch` |
-| Check runtime status | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_runtime_status` |
-| Invoke runtime agent | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_runtime_invoke` |
-| Delete runtime | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_runtime_delete` |
-| Get observability dashboard | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_observability_get_dashboard_` |
-| Get logs info | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_observability_get_logs_info` |
-| Get recent logs | Type 1 | `mcp_aws_bedrock_agentcore_agentcore_observability_get_recent_log` |
-
-## Common Mistakes to Avoid
-
-1. **Using wrong agent generation tool**: 
-   - ❌ WRONG: Using `generate_agentcore_runtime_agent` for gateway integration testing
-   - ❌ WRONG: Using `generate_agentcore_runtime_agent` for memory-enabled agents
-   - ❌ WRONG: Using `generate_agentcore_runtime_agent` for any development/testing
-   - ✅ RIGHT: Use `generate_strands_agent` for ALL tasks except "deploy to runtime"
-   - ✅ RIGHT: Use `generate_agentcore_runtime_agent` ONLY when prompt says "deploy to runtime"
-2. **Not using MCP tools**: ALWAYS use the MCP tools for Strands agents and AgentCore resources
-3. **Manually creating code**: Don't manually write Strands agent code - call the MCP tool
-4. **Guessing parameters**: Read the tool description to understand required parameters
-5. **Not saving results**: Always save tool results to config files as specified
-6. **Creating extra files**: Don't create README or documentation files unless explicitly requested
-7. **Auto-testing code**: Don't run tests automatically - wait for user instruction
-
-## Success Checklist
-
-**For Type 1 (Strands Agents & AgentCore Resources):**
-- [ ] Call the appropriate MCP generation tool
-- [ ] Extract `code` from the tool response
-- [ ] Save `code` to the filename specified in the prompt
-- [ ] **VERIFY**: File contains generated code/script, NOT a script that calls the MCP tool
-- [ ] For Strands agents: Code should have `from strands import Agent, tool`, `@tool` decorators
-- [ ] For AgentCore scripts: Script should use bedrock_agentcore libraries and save to config files
-
-**For Type 2 (AWS Resources):**
-- [ ] Create Python script using boto3
-- [ ] Script saves configuration to JSON files
-- [ ] No MCP tools needed
-
-## Default Values
-
-- **Region**: "us-east-1" (unless specified otherwise)
-- **Model ID**: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-- **Temperature**: 0.3
-- **Memory namespaces**: ["semantic", "preferences", "summary"]
-
-
-## API VALIDATION COMMANDS REFERENCE
-
-**CRITICAL**: Before using ANY boto3 or library API, validate the method signature using `help()`.
-
-This prevents errors like:
-- Wrong parameter names
-- Wrong message formats (tuples vs dicts)
-- Wrong client names
-- Missing required parameters
-
-### How to Use These Commands:
-
-1. **Before writing code**: Run the relevant help() command
-2. **Check the signature**: Verify parameter names and types
-3. **Use exact names**: Copy parameter names exactly as shown
-4. **Test if unsure**: Run the command to see the actual API
+# AgentCore MCP Workflow - Steering Template
 
 ---
 
-### MEMORY APIs - Library Classes (NOT boto3)
+## 1. CORE WORKFLOW
 
-Memory uses dedicated Python library classes, NOT boto3 clients.
+### Always Use MCP Tools
+- **Type 1** (Strands/AgentCore): Call MCP tool from `aws-bedrock-agentcore` server (e.g., `generate_strands_agent`) → Extract `code` → Save to file
+- **Type 2** (Cognito/IAM/Lambda): No MCP tool → Write boto3 script directly
 
-#### MemoryManager - For creating/deleting memory resources
-
-```bash
-# Initialize MemoryManager
-python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; help(MemoryManager.__init__)" 2>&1 | head -50
-
-# Create or get memory
-python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; help(MemoryManager.get_or_create_memory)" 2>&1 | head -50
-
-# Delete memory
-python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; help(MemoryManager.delete_memory)" 2>&1 | head -50
+### Agent Generation Rule
+```
+Prompt says "deploy to runtime"? 
+  YES → generate_agentcore_runtime_agent (with @app.entrypoint)
+  NO  → generate_strands_agent (everything else)
 ```
 
-#### MemoryClient - For storing/retrieving memories
+### Reference MCP Handlers
+Check `agentcore-mcp-server/handlers/` for correct API methods before writing any code.
 
-```bash
-# Initialize MemoryClient
-python -c "from bedrock_agentcore.memory import MemoryClient; help(MemoryClient.__init__)" 2>&1 | head -50
+---
 
-# Create event (store conversation) - CRITICAL: messages are List[Tuple[str, str]]
-python -c "from bedrock_agentcore.memory import MemoryClient; help(MemoryClient.create_event)" 2>&1 | head -50
+## 2. CRITICAL DATA STRUCTURES
 
-# Retrieve memories (semantic search)
-python -c "from bedrock_agentcore.memory import MemoryClient; help(MemoryClient.retrieve_memories)" 2>&1 | head -50
-```
-
-**CRITICAL - Message Format for create_event():**
+### Memory Strategies (Tagged Union)
 ```python
-# ✅ CORRECT: List of tuples (text, role)
-messages = [
-    ("Hello, I prefer email", "USER"),
-    ("Noted your preference", "ASSISTANT")
-]
+# ✅ CORRECT
+[{"summaryMemoryStrategy": {"name": "summary", "namespaces": ["..."]}},
+ {"userPreferenceMemoryStrategy": {"name": "preferences", "namespaces": ["..."]}},
+ {"semanticMemoryStrategy": {"name": "semantic", "namespaces": ["..."]}}]
 
-# ❌ WRONG: List of dicts
-messages = [
-    {"role": "USER", "content": [{"text": "Hello"}]}
-]
+# ❌ WRONG
+[{"name": "summary", "namespaces": ["..."]}]  # Missing wrapper
 ```
 
-#### Strands Memory Integration
+### Memory Messages (Tuples)
+```python
+# ✅ CORRECT
+[("Hello", "USER"), ("Hi", "ASSISTANT")]
 
-```bash
-# AgentCoreMemoryConfig
-python -c "from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig; help(AgentCoreMemoryConfig.__init__)" 2>&1 | head -50
-
-# RetrievalConfig
-python -c "from bedrock_agentcore.memory.integrations.strands.config import RetrievalConfig; help(RetrievalConfig.__init__)" 2>&1 | head -50
-
-# AgentCoreMemorySessionManager
-python -c "from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager; help(AgentCoreMemorySessionManager.__init__)" 2>&1 | head -50
+# ❌ WRONG
+[{"role": "USER", "content": [{"text": "Hello"}]}]  # Wrong structure
 ```
 
----
+### Cognito Discovery URL (IDP Domain)
+```python
+# ✅ CORRECT
+"https://cognito-idp.{region}.amazonaws.com/{pool_id}/.well-known/openid-configuration"
 
-### GATEWAY APIs - boto3 client: "bedrock-agentcore-control"
-
-All Gateway operations use the same boto3 client.
-
-```bash
-# Create gateway
-python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.create_gateway)" 2>&1 | head -50
-
-# Create gateway target (add Lambda)
-python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.create_gateway_target)" 2>&1 | head -50
-
-# List gateway targets
-python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.list_gateway_targets)" 2>&1 | head -50
-
-# Delete gateway target
-python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.delete_gateway_target)" 2>&1 | head -50
-
-# Delete gateway
-python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.delete_gateway)" 2>&1 | head -50
-```
-
-**Key Parameters:**
-- Gateway identifier: `gatewayIdentifier` (not `gateway_id`)
-- Target identifier: `targetId` (not `target_id`)
-
----
-
-### RUNTIME APIs - boto3 client: "bedrock-agentcore-control" + Runtime library
-
-Runtime uses both boto3 client AND the Runtime library class.
-
-#### Runtime Library (bedrock_agentcore_starter_toolkit)
-
-```bash
-# Initialize Runtime
-python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.__init__)" 2>&1 | head -50
-
-# Configure runtime
-python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.configure)" 2>&1 | head -50
-
-# Launch to runtime
-python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.launch)" 2>&1 | head -50
-
-# Check status
-python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.status)" 2>&1 | head -50
-
-# Invoke agent
-python -c "from bedrock_agentcore_starter_toolkit import Runtime; help(Runtime.invoke)" 2>&1 | head -50
-```
-
-#### Runtime boto3 APIs
-
-```bash
-# Delete agent runtime (boto3)
-python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); help(client.delete_agent_runtime)" 2>&1 | head -50
-```
-
-**Key Parameters:**
-- Agent identifier: `agentRuntimeId` (not `agent_id`)
-
----
-
-### IAM APIs - boto3 client: "iam"
-
-```bash
-# Create IAM role
-python -c "import boto3; client = boto3.client('iam'); help(client.create_role)" 2>&1 | head -50
-
-# Create IAM policy
-python -c "import boto3; client = boto3.client('iam'); help(client.create_policy)" 2>&1 | head -50
-
-# Attach policy to role
-python -c "import boto3; client = boto3.client('iam'); help(client.attach_role_policy)" 2>&1 | head -50
-
-# Delete IAM role
-python -c "import boto3; client = boto3.client('iam'); help(client.delete_role)" 2>&1 | head -50
-
-# Delete IAM policy
-python -c "import boto3; client = boto3.client('iam'); help(client.delete_policy)" 2>&1 | head -50
-
-# Get waiter for role propagation
-python -c "import boto3; client = boto3.client('iam'); help(client.get_waiter)" 2>&1 | head -50
-```
-
-**Key Parameters:**
-- Role name: `RoleName` (not `role_name`)
-- Policy ARN: `PolicyArn` (not `policy_arn`)
-- Trust policy: `AssumeRolePolicyDocument` (JSON string)
-- Permissions policy: `PolicyDocument` (JSON string)
-
----
-
-### STS APIs - boto3 client: "sts"
-
-```bash
-# Get caller identity (for account ID)
-python -c "import boto3; client = boto3.client('sts'); help(client.get_caller_identity)" 2>&1 | head -50
-
-# Assume role
-python -c "import boto3; client = boto3.client('sts'); help(client.assume_role)" 2>&1 | head -50
+# ❌ WRONG
+"https://{domain}.auth.{region}.amazoncognito.com/.well-known/openid-configuration"
 ```
 
 ---
 
-### CLOUDWATCH LOGS APIs - boto3 client: "logs"
+## 3. API VALIDATION COMMANDS
 
+**Note:** For boto3 clients, use `hasattr()` to verify methods exist. For library classes, use `inspect.signature()` to see exact parameter names.
+
+**Quick validation approach:**
 ```bash
-# Filter log events
-python -c "import boto3; client = boto3.client('logs'); help(client.filter_log_events)" 2>&1 | head -50
+# For boto3 - check if method exists (returns True/False)
+python -c "import boto3; client = boto3.client('iam'); print(hasattr(client, 'create_role'))"
 
-# Tail logs (for CLI reference)
-# aws logs tail <log-group-name> --follow
+# For libraries - get exact signature with parameter names
+python -c "from bedrock_agentcore.memory import MemoryClient; import inspect; print(inspect.signature(MemoryClient.create_event))"
+```
+
+**Why this approach?**
+- `hasattr()` returns True/False immediately (no pagination)
+- `inspect.signature()` shows exact parameter names for library methods
+- Both commands complete instantly without user interaction
+
+### Memory APIs
+```bash
+# MemoryManager - shows exact signatures
+python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; import inspect; print('__init__:', inspect.signature(MemoryManager.__init__))"
+python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; import inspect; print('get_or_create_memory:', inspect.signature(MemoryManager.get_or_create_memory))"
+python -c "from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager; import inspect; print('delete_memory:', inspect.signature(MemoryManager.delete_memory))"
+
+# MemoryClient - shows exact signatures
+python -c "from bedrock_agentcore.memory import MemoryClient; import inspect; print('__init__:', inspect.signature(MemoryClient.__init__))"
+python -c "from bedrock_agentcore.memory import MemoryClient; import inspect; print('create_event:', inspect.signature(MemoryClient.create_event))"
+python -c "from bedrock_agentcore.memory import MemoryClient; import inspect; print('retrieve_memories:', inspect.signature(MemoryClient.retrieve_memories))"
+
+# Strands Memory Integration
+python -c "from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig; import inspect; print('AgentCoreMemoryConfig:', inspect.signature(AgentCoreMemoryConfig.__init__))"
+python -c "from bedrock_agentcore.memory.integrations.strands.config import RetrievalConfig; import inspect; print('RetrievalConfig:', inspect.signature(RetrievalConfig.__init__))"
+python -c "from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager; import inspect; print('SessionManager:', inspect.signature(AgentCoreMemorySessionManager.__init__))"
+```
+
+### Gateway APIs (boto3)
+```bash
+# Note: boto3 clients show (*args, **kwargs) - use these to verify methods exist
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'create_gateway'))"
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'create_gateway_target'))"
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'list_gateway_targets'))"
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'delete_gateway_target'))"
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'delete_gateway'))"
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'get_gateway'))"
+
+# Key parameters (from AWS documentation):
+# create_gateway: name, roleArn, authorizerConfiguration, protocolType
+# create_gateway_target: gatewayIdentifier, targetName, lambdaArn, toolSchema
+# list_gateway_targets: gatewayIdentifier
+# delete_gateway_target: gatewayIdentifier, targetId
+# delete_gateway: gatewayIdentifier
+```
+
+### Runtime APIs
+```bash
+# Runtime Library - shows exact signatures
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; import inspect; print('__init__:', inspect.signature(Runtime.__init__))"
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; import inspect; print('configure:', inspect.signature(Runtime.configure))"
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; import inspect; print('launch:', inspect.signature(Runtime.launch))"
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; import inspect; print('status:', inspect.signature(Runtime.status))"
+python -c "from bedrock_agentcore_starter_toolkit import Runtime; import inspect; print('invoke:', inspect.signature(Runtime.invoke))"
+
+# Runtime boto3 - verify methods exist
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'delete_agent_runtime'))"
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'get_agent_runtime'))"
+python -c "import boto3; client = boto3.client('bedrock-agentcore-control'); print(hasattr(client, 'list_agent_runtimes'))"
+```
+
+### IAM APIs (boto3)
+```bash
+# Note: boto3 clients show (*args, **kwargs) - use these to verify methods exist
+python -c "import boto3; client = boto3.client('iam'); print(hasattr(client, 'create_role'))"
+python -c "import boto3; client = boto3.client('iam'); print(hasattr(client, 'create_policy'))"
+python -c "import boto3; client = boto3.client('iam'); print(hasattr(client, 'attach_role_policy'))"
+python -c "import boto3; client = boto3.client('iam'); print(hasattr(client, 'detach_role_policy'))"
+python -c "import boto3; client = boto3.client('iam'); print(hasattr(client, 'delete_role'))"
+python -c "import boto3; client = boto3.client('iam'); print(hasattr(client, 'delete_policy'))"
+python -c "import boto3; client = boto3.client('iam'); print(hasattr(client, 'get_waiter'))"
+
+# Key parameters (from AWS documentation):
+# create_role: RoleName, AssumeRolePolicyDocument (JSON string)
+# create_policy: PolicyName, PolicyDocument (JSON string)
+# attach_role_policy: RoleName, PolicyArn
+# detach_role_policy: RoleName, PolicyArn
+# delete_role: RoleName
+# delete_policy: PolicyArn
+```
+
+### STS APIs (boto3)
+```bash
+python -c "import boto3; client = boto3.client('sts'); print(hasattr(client, 'get_caller_identity'))"
+python -c "import boto3; client = boto3.client('sts'); print(hasattr(client, 'assume_role'))"
+
+# Key parameters:
+# get_caller_identity: (no parameters)
+# assume_role: RoleArn, RoleSessionName
+```
+
+### CloudWatch Logs APIs (boto3)
+```bash
+python -c "import boto3; client = boto3.client('logs'); print(hasattr(client, 'filter_log_events'))"
+python -c "import boto3; client = boto3.client('logs'); print(hasattr(client, 'describe_log_groups'))"
+python -c "import boto3; client = boto3.client('logs'); print(hasattr(client, 'describe_log_streams'))"
+python -c "import boto3; client = boto3.client('logs'); print(hasattr(client, 'get_log_events'))"
+
+# Key parameters:
+# filter_log_events: logGroupName, startTime, endTime
+# describe_log_groups: logGroupNamePrefix
+# describe_log_streams: logGroupName
+# get_log_events: logGroupName, logStreamName
+```
+
+### Cognito APIs (boto3)
+```bash
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'create_user_pool'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'create_user_pool_client'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'create_user_pool_domain'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'create_resource_server'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'describe_user_pool'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'describe_user_pool_domain'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'describe_user_pool_client'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'list_resource_servers'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'delete_user_pool'))"
+python -c "import boto3; client = boto3.client('cognito-idp'); print(hasattr(client, 'delete_user_pool_domain'))"
+
+# Key parameters:
+# create_user_pool: PoolName, Policies, Schema
+# create_user_pool_client: UserPoolId, ClientName, GenerateSecret, AllowedOAuthFlows
+# create_user_pool_domain: Domain, UserPoolId
+# create_resource_server: UserPoolId, Identifier, Name, Scopes
+# describe_user_pool: UserPoolId
+# describe_user_pool_client: UserPoolId, ClientId
+# delete_user_pool: UserPoolId
+```
+
+### Lambda APIs (boto3)
+```bash
+python -c "import boto3; client = boto3.client('lambda'); print(hasattr(client, 'create_function'))"
+python -c "import boto3; client = boto3.client('lambda'); print(hasattr(client, 'add_permission'))"
+python -c "import boto3; client = boto3.client('lambda'); print(hasattr(client, 'remove_permission'))"
+python -c "import boto3; client = boto3.client('lambda'); print(hasattr(client, 'delete_function'))"
+python -c "import boto3; client = boto3.client('lambda'); print(hasattr(client, 'get_function'))"
+python -c "import boto3; client = boto3.client('lambda'); print(hasattr(client, 'update_function_code'))"
+python -c "import boto3; client = boto3.client('lambda'); print(hasattr(client, 'invoke'))"
+
+# Key parameters:
+# create_function: FunctionName, Runtime, Role, Handler, Code
+# add_permission: FunctionName, StatementId, Action, Principal
+# remove_permission: FunctionName, StatementId
+# delete_function: FunctionName
+# get_function: FunctionName
+# update_function_code: FunctionName, ZipFile or S3Bucket/S3Key
+# invoke: FunctionName, Payload
 ```
 
 ---
 
-### COGNITO APIs - boto3 client: "cognito-idp" (Type 2 - No MCP tool)
+## 4. MCP TOOLS & TASK MAPPING
 
-```bash
-# Create user pool
-python -c "import boto3; client = boto3.client('cognito-idp'); help(client.create_user_pool)" 2>&1 | head -50
+| Task | Type | MCP Tool |
+|------|------|----------|
+| Create agent (testing/dev) | 1 | `generate_strands_agent` |
+| Create agent (runtime deploy) | 1 | `generate_agentcore_runtime_agent` |
+| Create memory | 1 | `memory_create` |
+| Store conversation | 1 | `memory_create_event` |
+| Retrieve memories | 1 | `memory_retrieve` |
+| Delete memory | 1 | `memory_delete` |
+| Create gateway | 1 | `gateway_create` |
+| Add Lambda to gateway | 1 | `gateway_add_lambda_target` |
+| List gateway targets | 1 | `gateway_list_targets` |
+| Delete gateway target | 1 | `gateway_delete_target` |
+| Delete gateway | 1 | `gateway_delete` |
+| Create IAM role | 1 | `create_runtime_execution_rol` |
+| Configure runtime | 1 | `runtime_configure` |
+| Launch to runtime | 1 | `runtime_launch` |
+| Check runtime status | 1 | `runtime_status` |
+| Invoke runtime agent | 1 | `runtime_invoke` |
+| Delete runtime | 1 | `runtime_delete` |
+| Get dashboard URL | 1 | `observability_get_dashboard_` |
+| Get logs info | 1 | `observability_get_logs_info` |
+| Get recent logs | 1 | `observability_get_recent_log` |
+| Create Cognito | 2 | No MCP - use boto3 |
+| Create Lambda | 2 | No MCP - use boto3 |
+| Test agent locally | 2 | No MCP - import & test |
 
-# Create user pool client
-python -c "import boto3; client = boto3.client('cognito-idp'); help(client.create_user_pool_client)" 2>&1 | head -50
+---
 
-# Create user pool domain
-python -c "import boto3; client = boto3.client('cognito-idp'); help(client.create_user_pool_domain)" 2>&1 | head -50
+## 5. REFERENCE TABLES
 
-# Create resource server
-python -c "import boto3; client = boto3.client('cognito-idp'); help(client.create_resource_server)" 2>&1 | head -50
+### Service Clients
+| Service | Client/Library |
+|---------|---------------|
+| Memory (create/delete) | `MemoryManager` from `bedrock_agentcore_starter_toolkit` |
+| Memory (store/retrieve) | `MemoryClient` from `bedrock_agentcore.memory` |
+| Gateway | `boto3.client('bedrock-agentcore-control')` |
+| Runtime (deploy) | `Runtime` from `bedrock_agentcore_starter_toolkit` |
+| Runtime (delete) | `boto3.client('bedrock-agentcore-control')` |
+| IAM | `boto3.client('iam')` |
+| STS | `boto3.client('sts')` |
+| CloudWatch Logs | `boto3.client('logs')` |
+| Cognito | `boto3.client('cognito-idp')` |
+| Lambda | `boto3.client('lambda')` |
+
+### Configuration Files
+| File | Contains |
+|------|----------|
+| `memory_config.json` | memory_id |
+| `cognito_config.json` | client_id, client_secret, discovery_url |
+| `gateway_config.json` | gateway_id, gateway_url |
+| `lambda_config.json` | function_arn, tool_schema |
+| `gateway_role_config.json` | role_arn |
+| `runtime_execution_role_config.json` | role_arn |
+| `runtime_config.json` | agent_arn |
+
+### Default Values
+| Parameter | Value |
+|-----------|-------|
+| Region | `us-west-2` |
+| Model | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| Temperature | `0.3` |
+| Memory Namespaces | `["semantic", "preferences", "summary"]` |
+
+### Common Mistakes
+| ❌ Wrong | ✅ Correct |
+|---------|-----------|
+| `generate_agentcore_runtime_agent` for testing | `generate_strands_agent` |
+| Manually write agent code | Call MCP tool |
+| Guess API methods | Check MCP handlers |
+| Strategies without wrapper | Use tagged union format |
+| Hosted UI domain for OIDC | Use IDP domain |
+| Auto-create README files | Only when requested |
+| Auto-run tests | Wait for user instruction |
+
+---
+
+## 6. WORKFLOW RULES
+
+### DO NOT
+- Manually create Strands agent code or AgentCore scripts
+- Execute operations directly
+- Guess API method names or parameters
+- Create extra documentation files automatically
+- Run tests automatically
+
+### ALWAYS
+- Call MCP tools for Type 1 tasks
+- Extract `code` from tool response and save to file
+- Reference MCP handler files for API methods
+- Save results to config JSON files
+- Use exact parameter names from API validation
+
+### Learning Resources
+- **Strands questions** → Use `strands-agents` MCP server
+- **AgentCore questions** → Use `bedrock-agentcore-mcp-server` MCP server
+
+---
+
+## 7. EXAMPLE WORKFLOWS
+
+### Example 1: Generate Strands Agent (Type 1)
+```
+Prompt: "Create a file called 01_generate_agent.py"
+Step 1: Call mcp_aws_bedrock_agentcore_generate_strands_agent
+Step 2: Extract code from tool response
+Step 3: Save code to 01_generate_agent.py
+Result: File contains generated Strands agent code
+```
+
+### Example 2: Create Cognito (Type 2)
+```
+Prompt: "Create a script called 08_create_cognito_user_pool.py"
+Step 1: No MCP tool available
+Step 2: Create Python script using boto3 directly
+Step 3: Script creates AWS resource and saves config to JSON
+Result: Python script that user will run
+```
+
+### Example 3: Deploy to Runtime (Type 1)
+```
+Prompt: "Deploy to AgentCore Runtime"
+Step 1: Call mcp_aws_bedrock_agentcore_generate_agentcore_runtime_agent
+Step 2: Extract code from tool response
+Step 3: Save code to 17_runtime_agent.py
+Result: Agent with @app.entrypoint decorator
 ```
 
 ---
 
-### LAMBDA APIs - boto3 client: "lambda" (Type 2 - No MCP tool)
+## 8. SUCCESS CHECKLIST
 
-```bash
-# Create function
-python -c "import boto3; client = boto3.client('lambda'); help(client.create_function)" 2>&1 | head -50
+### For Type 1 (MCP-Generated)
+- [ ] Called appropriate MCP tool
+- [ ] Extracted `code` from response
+- [ ] Saved to correct filename
+- [ ] File contains generated code (NOT a script that calls MCP)
+- [ ] For Strands agents: Code has `from strands import Agent, tool`, `@tool` decorators
+- [ ] For AgentCore scripts: Script uses bedrock_agentcore libraries and saves to config files
 
-# Add permission
-python -c "import boto3; client = boto3.client('lambda'); help(client.add_permission)" 2>&1 | head -50
-
-# Delete function
-python -c "import boto3; client = boto3.client('lambda'); help(client.delete_function)" 2>&1 | head -50
-```
-
----
-
-## Quick Reference: Which Client/Library to Use?
-
-| Service | Client/Library | Type |
-|---------|---------------|------|
-| Memory (create/delete) | `MemoryManager` from `bedrock_agentcore_starter_toolkit` | Library Class |
-| Memory (store/retrieve) | `MemoryClient` from `bedrock_agentcore.memory` | Library Class |
-| Gateway | `boto3.client('bedrock-agentcore-control')` | boto3 |
-| Runtime (deploy) | `Runtime` from `bedrock_agentcore_starter_toolkit` | Library Class |
-| Runtime (delete) | `boto3.client('bedrock-agentcore-control')` | boto3 |
-| IAM | `boto3.client('iam')` | boto3 |
-| STS | `boto3.client('sts')` | boto3 |
-| CloudWatch Logs | `boto3.client('logs')` | boto3 |
-| Cognito | `boto3.client('cognito-idp')` | boto3 |
-| Lambda | `boto3.client('lambda')` | boto3 |
+### For Type 2 (boto3 Direct)
+- [ ] Created Python script using boto3
+- [ ] Script saves configuration to JSON files
+- [ ] Handled errors gracefully
+- [ ] Made script rerunnable
 
 ---
 
-## Validation Workflow
+## 9. API VALIDATION WORKFLOW
 
 **Before writing ANY code that uses APIs:**
 
 1. **Identify the service** (Memory, Gateway, Runtime, etc.)
-2. **Find the validation command** in this reference
-3. **Run the command** to see the actual API signature
-4. **Copy exact parameter names** from the help output
+2. **Find the validation command** in Section 3
+3. **Run the command** to see the actual API signature (no pagination!)
+4. **Copy exact parameter names** from the signature output
 5. **Write your code** using the validated parameters
 
 **Example:**
 ```bash
-# Step 1: Check the API
-python -c "from bedrock_agentcore.memory import MemoryClient; help(MemoryClient.create_event)" 2>&1 | head -50
+# Step 1: Check the API signature
+python -c "from bedrock_agentcore.memory import MemoryClient; import inspect; print(inspect.signature(MemoryClient.create_event))"
 
-# Step 2: See it expects List[Tuple[str, str]]
-# Step 3: Write code with correct format
+# Step 2: Output shows: (self, memory_id, actor_id, session_id, messages)
+# Step 3: See it expects List[Tuple[str, str]] for messages
+# Step 4: Write code with correct format
 messages = [("text", "USER"), ("response", "ASSISTANT")]
 ```
 
-This prevents 90% of API-related errors!
+**Why use `inspect.signature()` instead of `help()`?**
+- No pagination - output displays immediately
+- Shows exact parameter names and types
+- No user interaction required
+- Perfect for quick API validation
+
+**Key Parameters to Remember:**
+- Gateway: `gatewayIdentifier` (not `gateway_id`), `targetId` (not `target_id`)
+- Runtime: `agentRuntimeId` (not `agent_id`)
+- IAM: `RoleName` (not `role_name`), `PolicyArn` (not `policy_arn`)
+- IAM Trust Policy: `AssumeRolePolicyDocument` (JSON string)
+- IAM Permissions: `PolicyDocument` (JSON string)
+
+---
+
+**Version**: 1.1 | **Updated**: 2026-02-02

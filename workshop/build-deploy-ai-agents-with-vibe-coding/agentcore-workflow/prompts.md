@@ -54,8 +54,14 @@ This helps you understand the framework before diving into code. Kiro will expla
 
 "Create a returns and refunds agent with these features:
 - Agent name: returns_refunds_agent
-- System prompt: You are a helpful returns and refunds assistant. Help customers check return eligibility, calculate refunds, and understand policies. Be friendly and accurate.
+- System prompt: You are a helpful returns and refunds assistant. Help customers check return eligibility, calculate refunds, and understand policies. Use the retrieve tool to access Amazon return policy documents for accurate information. Be friendly and accurate.
+- Region: us-west-2
 - Include the current_time tool
+- Include the retrieve tool with Knowledge Base integration:
+  - First, retrieve the knowledge base ID from CloudFormation stack 'knowledgebase' (OutputKey: 'KnowledgeBaseId')
+  - If CloudFormation retrieval fails, use placeholder '<PLACE-YOUR-KB-ID>'
+  - Save knowledge base ID to kb_config.json
+  - Configure retrieve tool with the knowledge base ID
 - Add 3 custom tools:
   - check_return_eligibility: checks if items can be returned based on purchase date and category
   - calculate_refund_amount: calculates refund based on price, condition, and return reason
@@ -72,10 +78,13 @@ This helps you understand the framework before diving into code. Kiro will expla
 
 **Expected outcome**: 
 - File created: `01_returns_refunds_agent.py`
-- Contains: Complete Strands agent code with @tool decorators for all 4 tools
+- File created: `kb_config.json` with knowledge base ID
+- Contains: Complete Strands agent code with @tool decorators for all 5 tools (current_time, retrieve, check_return_eligibility, calculate_refund_amount, format_policy_response)
+- Knowledge Base: Configured with ID from CloudFormation stack 'knowledgebase'
+- Region: All AWS operations use us-west-2
 - Ready to run: Can be imported and tested immediately
 
-**Why this matters**: This is your foundation agent. You'll enhance it with memory and external tools in the next steps.
+**Why this matters**: This is your foundation agent with access to Amazon return policy documents. The retrieve tool lets your agent search the knowledge base for accurate policy information. You'll enhance it with memory and external tools in the next steps.
 
 ---
 
@@ -88,7 +97,8 @@ This helps you understand the framework before diving into code. Kiro will expla
 - What time is it?
 - Can I return a laptop I purchased 25 days ago?
 - Calculate my refund for a $500 item returned due to defect in like-new condition
-- Explain the return policy for electronics in a simple way"
+- Explain the return policy for electronics in a simple way
+- Use the retrieve tool to search the knowledge base for 'Amazon return policy for electronics'"
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -96,15 +106,16 @@ This helps you understand the framework before diving into code. Kiro will expla
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
 4. If MCP fails, STOP and ask user - do NOT create code manually
 
-**What happens**: Kiro creates a test script that validates all your agent's tools work correctly.
+**What happens**: Kiro creates a test script that validates all your agent's tools work correctly, including the retrieve tool accessing the knowledge base.
 
 **Expected outcome**:
 - File created: `02_test_agent.py`
-- When run: Displays 4 test results showing each tool working
+- When run: Displays 5 test results showing each tool working
 - Output: Agent responses for each test question
-- Verification: All 4 tools execute successfully
+- Verification: All 5 tools execute successfully (current_time, check_return_eligibility, calculate_refund_amount, format_policy_response, retrieve)
+- Knowledge Base: Retrieve tool successfully queries Amazon return policy documents
 
-**Why this matters**: Always test before moving forward. This ensures your foundation is solid.
+**Why this matters**: Always test before moving forward. This ensures your foundation is solid and the knowledge base integration works correctly.
 
 ---
 
@@ -129,6 +140,7 @@ Learn about the three memory types: summaries (conversation context), preference
 **What to ask Kiro**:
 
 "Create a script called 03_create_memory.py that sets up memory for my returns agent:
+- Region: us-west-2
 - Memory name: returns_refunds_memory
 - Description: Stores customer interactions, preferences, and return history
 - Include all three memory strategies: summary, preferences, and semantic
@@ -147,7 +159,7 @@ Learn about the three memory types: summaries (conversation context), preference
 - When run: Creates AgentCore Memory resource in AWS
 - Output: "✓ Memory created successfully! Memory ID: mem-xxxxx"
 - File created: `memory_config.json` with memory_id saved
-- Time: Takes ~10 seconds to complete
+- Time: Takes ~3 minutes to complete
 
 **Why this matters**: Memory lets your agent provide personalized service by remembering each customer - just like how your favorite barista remembers you like oat milk!
 
@@ -158,6 +170,7 @@ Learn about the three memory types: summaries (conversation context), preference
 **What to ask Kiro**:
 
 "Create a script called 04_seed_memory.py that adds sample customer conversations to memory:
+- Region: us-west-2
 - Customer ID: user_001
 - Add a conversation where the customer mentions they prefer email notifications and previously returned a defective laptop
 - Add another conversation where they ask about return windows for electronics
@@ -188,6 +201,7 @@ Learn about the three memory types: summaries (conversation context), preference
 **What to ask Kiro**:
 
 "Create a script called 05_test_memory.py that:
+- Region: us-west-2
 - Loads the memory ID from memory_config.json
 - Retrieves memories for user_001 from the preferences namespace
 - Searches for: 'customer preferences and communication'
@@ -219,9 +233,11 @@ Learn about the three memory types: summaries (conversation context), preference
 
 "Create a memory-enabled version of my returns agent:
 - Agent name: returns_agent_with_memory
-- System prompt: You are a personalized returns assistant who remembers customer preferences and history
-- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time**
+- System prompt: You are a personalized returns assistant who remembers customer preferences and history. Use the retrieve tool to access Amazon return policy documents for accurate information.
+- Region: us-west-2
+- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time and retrieve**
 - Load memory ID from memory_config.json
+- Load knowledge base ID from kb_config.json and configure retrieve tool
 - Include all three memory namespaces
 - Save to: 06_memory_enabled_agent.py"
 
@@ -235,10 +251,10 @@ Learn about the three memory types: summaries (conversation context), preference
 
 **Expected outcome**:
 - File created: `06_memory_enabled_agent.py`
-- Contains: All 4 original tools PLUS memory integration
+- Contains: All 5 original tools (current_time, retrieve, check_return_eligibility, calculate_refund_amount, format_policy_response) PLUS memory integration
 - Ready for: Testing with the next prompt
 
-**Why this matters**: Your agent can now remember each customer's preferences (like "I prefer email") and past interactions (like "returned a defective laptop") while still doing all its original jobs - checking eligibility, calculating refunds, and explaining policies. It's like upgrading from a helpful assistant to a helpful assistant who actually remembers you!
+**Why this matters**: Your agent can now remember each customer's preferences (like "I prefer email") and past interactions (like "returned a defective laptop") while still doing all its original jobs - checking eligibility, calculating refunds, explaining policies, and searching the knowledge base for accurate policy information. It's like upgrading from a helpful assistant to a helpful assistant who actually remembers you!
 
 ---
 
@@ -293,12 +309,13 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 **What to ask Kiro**:
 
 "Create a script called 08_create_cognito.py that sets up authentication for my gateway:
+- Region: us-west-2
 - Create a Cognito User Pool (this is like a secure login system)
 - Add a domain prefix for OAuth endpoints (required for token generation)
 - Add OAuth support with read/write permissions
 - Create an app client for machine-to-machine authentication (so the agent can securely call the gateway)
 - Save all the credentials to cognito_config.json including the domain URL and token endpoint
-- **CRITICAL**: Use the IDP-based discovery URL format: https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/openid-configuration (NOT the hosted UI domain format)"
+- **CRITICAL**: Use the IDP-based discovery URL format: https://cognito-idp.us-west-2.amazonaws.com/{user_pool_id}/.well-known/openid-configuration (NOT the hosted UI domain format)"
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -327,6 +344,7 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 **What to ask Kiro**:
 
 "Create a script called 09_create_gateway_role.py that:
+- Region: us-west-2
 - Creates an IAM role for the gateway
 - Grants permission to invoke Lambda functions
 - Saves the role ARN to gateway_role_config.json"
@@ -356,6 +374,7 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 **What to ask Kiro**:
 
 "Create a script called 10_create_lambda.py that creates a Lambda function:
+- Region: us-west-2
 - Function name: OrderLookupFunction
 - Purpose: Look up order details by order ID (like ORD-001, ORD-002)
 - Returns: order_id, product_name, purchase_date, amount, and whether it's eligible for return
@@ -388,6 +407,7 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 **What to ask Kiro**:
 
 "Create a script called 11_create_gateway.py that:
+- Region: us-west-2
 - Creates a gateway named ReturnsRefundsGateway
 - Loads Cognito and IAM role config
 - Saves gateway ID and URL to gateway_config.json"
@@ -418,6 +438,7 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 **What to ask Kiro**:
 
 "Create a script called 12_add_lambda_to_gateway.py that:
+- Region: us-west-2
 - Loads gateway and Lambda config
 - Registers the OrderLookupFunction as a gateway target
 - Names it: OrderLookup"
@@ -447,6 +468,7 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 **What to ask Kiro**:
 
 "Create a script called 13_list_gateway_targets.py that:
+- Region: us-west-2
 - Loads the gateway ID
 - Lists all registered targets
 - Displays their status"
@@ -479,10 +501,12 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 
 "Create the complete returns agent with memory and gateway:
 - Agent name: full_featured_returns_agent
-- System prompt: You are a returns assistant with memory and order lookup capabilities. Remember customer preferences and look up order details.
-- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time**
-- Load configs from: memory_config.json, gateway_config.json, cognito_config.json
+- System prompt: You are a returns assistant with memory and order lookup capabilities. Remember customer preferences, look up order details, and use the retrieve tool to access Amazon return policy documents for accurate information.
+- Region: us-west-2
+- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time and retrieve**
+- Load configs from: memory_config.json, gateway_config.json, cognito_config.json, kb_config.json
 - Include memory and gateway integration
+- Configure retrieve tool with knowledge base ID
 - Save to: 14_full_agent.py"
 
 **⚠️ VALIDATION:**
@@ -495,12 +519,12 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 
 **Expected outcome**:
 - File created: `14_full_agent.py`
-- Contains: All 4 original tools + memory + gateway integration
+- Contains: All 5 original tools (current_time, retrieve, check_return_eligibility, calculate_refund_amount, format_policy_response) + memory + gateway integration
 - Ready to test: Agent can be imported and used immediately
-- Capabilities: Remembers customers, looks up orders, processes returns
+- Capabilities: Remembers customers, looks up orders, processes returns, searches knowledge base for policies
 - Ready for: Testing with next prompt
 
-**Why this matters**: This combines everything - memory, custom tools, and external services into one complete agent.
+**Why this matters**: This combines everything - memory, custom tools, knowledge base access, and external services into one complete agent.
 
 ---
 
@@ -560,8 +584,10 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 **What to ask Kiro**:
 
 "Create a script called 16_create_runtime_role.py that creates an IAM role for runtime with permissions for:
+- Region: us-west-2
 - Bedrock model access: Resource "*", Actions: InvokeModel, InvokeModelWithResponseStream
 - Memory: bedrock-agentcore:GetMemory, CreateEvent, GetLastKTurns, RetrieveMemory, ListEvents
+- Knowledge Base: bedrock-agent:Retrieve (for accessing the knowledge base via retrieve tool)
 - CloudWatch: logs:CreateLogGroup, CreateLogStream, PutLogEvents, DescribeLogStreams
 - X-Ray: xray:PutTraceSegments, PutTelemetryRecords
 - Gateway: bedrock-agentcore:InvokeGateway, GetGateway, ListGatewayTargets
@@ -597,10 +623,12 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 
 "Create the runtime-ready version of my agent:
 - Agent name: returns_agent_runtime
-- System prompt: Production returns assistant with full memory and gateway capabilities
-- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time**
-- Load all configs: memory, gateway, cognito
+- System prompt: Production returns assistant with full memory and gateway capabilities. Use the retrieve tool to access Amazon return policy documents for accurate information.
+- Region: us-west-2
+- **IMPORTANT: Retain ALL the custom tools from the original agent (check_return_eligibility, calculate_refund_amount, format_policy_response) plus current_time and retrieve**
+- Load all configs: memory, gateway, cognito, kb_config
 - Include memory and gateway integration
+- Configure retrieve tool with knowledge base ID
 - Add comprehensive error handling to catch and log any failures
 - Save to: 17_runtime_agent.py"
 
@@ -614,12 +642,13 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 
 **Expected outcome**:
 - File created: `17_runtime_agent.py`
-- Contains: All 4 original tools + memory + gateway + @app.entrypoint decorator
+- Contains: All 5 original tools (current_time, retrieve, check_return_eligibility, calculate_refund_amount, format_policy_response) + memory + gateway + @app.entrypoint decorator
 - Structure: BedrockAgentCoreApp format for runtime deployment
+- Knowledge Base: Configured with ID from kb_config.json
 - Ready for: Deployment to AgentCore Runtime
 - Note: This file is NOT run directly - it's deployed by the next script
 
-**Why this matters**: Runtime agents need specific structure and configuration while maintaining all functionality.
+**Why this matters**: Runtime agents need specific structure and configuration while maintaining all functionality including knowledge base access.
 
 ---
 
@@ -657,13 +686,14 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 **What to ask Kiro**:
 
 "Create a script called 19_deploy_agent.py that:
-- Loads all configuration files (memory, gateway, cognito, runtime execution role)
+- Loads all configuration files (memory, gateway, cognito, runtime execution role, kb_config)
 - Configures runtime deployment settings:
   - Entrypoint: 17_runtime_agent.py
   - Agent name: returns_refunds_agent
   - Execution role from config
   - Cognito authentication
-- Sets environment variables for memory, gateway, and Cognito
+  - Region: us-west-2
+- Sets environment variables for memory, gateway, cognito, and knowledge base (KNOWLEDGE_BASE_ID from kb_config.json)
 - Deploys to AgentCore Runtime
 - Saves agent ARN to runtime_config.json"
 
@@ -685,7 +715,7 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 - Output: "✓ Agent deployment initiated!"
 - Output: "Agent ARN: arn:aws:bedrock-agentcore:..."
 - File created: `runtime_config.json` with agent_arn
-- Time: Takes 5-10 minutes
+- Time: Takes ~5 minutes
 
 **Why this matters**: This is the moment your agent goes live!
 
@@ -696,6 +726,7 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 **What to ask Kiro**:
 
 "Create a script called 20_check_status.py that:
+- Region: us-west-2
 - Checks deployment status
 - Monitors until READY or FAILED
 - Displays current state"
@@ -773,6 +804,7 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 **What to ask Kiro**:
 
 "Create a script called 22_get_dashboard.py that:
+- Region: us-west-2
 - Gets the CloudWatch GenAI Observability dashboard URL
 - Displays the link to access monitoring"
 
@@ -796,14 +828,15 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 
 ---
 
-### Prompt 23: View Agent Logs
+### Prompt 23: Access Agent Logs
 
 **What to ask Kiro**:
 
-"Create a script called 23_view_logs.py that:
+"Create a script called 23_get_logs_info.py that:
+- Region: us-west-2
 - Loads agent ARN from runtime_config.json
-- Retrieves the last hour of logs
-- Displays recent agent activity"
+- Gets the CloudWatch log group information
+- Displays the log group name and AWS CLI commands for viewing logs"
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -811,17 +844,18 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
 4. If MCP fails, STOP and ask user - do NOT create code manually
 
-**What happens**: Kiro creates a script to view your agent's logs.
+**What happens**: Kiro creates a script that gives you the log group information and commands to view logs.
 
 **Expected outcome**:
-- File created: `23_view_logs.py`
-- When run: Fetches recent CloudWatch logs
-- Output: "Retrieving logs for agent: arn:aws:..."
-- Output: "✓ Retrieved X log events"
-- Shows: Recent agent invocations, tool calls, and responses
-- Time: Takes ~5 seconds
+- File created: `23_get_logs_info.py`
+- When run: Retrieves log group information
+- Output: "CloudWatch Log Group Information"
+- Output: "Log Group: /aws/bedrock-agentcore/..."
+- Output: "Agent ARN: arn:aws:..."
+- Shows: AWS CLI commands for tailing and viewing logs
+- Time: Takes ~2 seconds
 
-**Why this matters**: Logs help you debug issues and understand agent behavior - they're like a diary of everything your agent does!
+**Why this matters**: Logs help you debug issues and understand agent behavior - this gives you the log group name and commands to access them whenever you need!
 
 ---
 
@@ -836,6 +870,7 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 **What to ask Kiro**:
 
 "Create a script called 24_cleanup_aws.py that safely deletes all the AWS resources we created:
+- Region: us-west-2
 - Runtime agent (the deployed agent)
 - Gateway and its targets (the secure connection)
 - Memory resource (stored customer data)

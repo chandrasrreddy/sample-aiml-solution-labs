@@ -79,7 +79,7 @@ mcp = FastMCP("aws-bedrock-agentcore")
 
 @mcp.tool()
 async def agentcore_create_runtime_execution_role_script(
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Generate script to create IAM execution role for AgentCore Runtime.
     
@@ -93,7 +93,7 @@ async def agentcore_create_runtime_execution_role_script(
     - Workload Identity: Secure credentials
     
     Args:
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -110,7 +110,7 @@ async def agentcore_memory_create(
     name: str,
     strategies: list[dict],
     description: str = "",
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Create an AgentCore Memory resource with memory strategies.
     
@@ -129,7 +129,7 @@ async def agentcore_memory_create(
             - userPreferenceMemoryStrategy: {'name': 'preferences', 'namespaces': ['app/{actorId}/preferences']}
             - semanticMemoryStrategy: {'name': 'semantic', 'namespaces': ['app/{actorId}/semantic']}
         description: Human-readable description of the memory's purpose
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -148,7 +148,7 @@ async def agentcore_memory_create_event(
     actor_id: str,
     session_id: str,
     messages: list[tuple[str, str]],
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Store conversation messages in AgentCore Memory.
     
@@ -163,7 +163,7 @@ async def agentcore_memory_create_event(
         actor_id: Unique identifier for the user (e.g., 'user_001')
         session_id: Unique identifier for the session (e.g., 'session_20240116')
         messages: List of (message, role) tuples where role is 'USER' or 'ASSISTANT'
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -184,7 +184,7 @@ async def agentcore_memory_retrieve(
     query: str,
     top_k: int = 3,
     relevance_score: float = 0.2,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Retrieve memories using semantic search.
     
@@ -204,7 +204,7 @@ async def agentcore_memory_retrieve(
         query: Natural language search query (e.g., 'user preferences and settings')
         top_k: Maximum number of results to return (default: 3)
         relevance_score: Minimum similarity threshold 0.0-1.0 (default: 0.2)
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -222,7 +222,7 @@ async def agentcore_memory_retrieve(
 @mcp.tool()
 async def agentcore_memory_delete(
     memory_id: str,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Delete an AgentCore Memory resource and all associated data.
     
@@ -231,7 +231,7 @@ async def agentcore_memory_delete(
     
     Args:
         memory_id: Memory ID to delete (e.g., 'my_memory-ABC123')
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -255,7 +255,7 @@ async def agentcore_gateway_create(
     protocol_type: str = "MCP",
     authorizer_type: str = "CUSTOM_JWT",
     description: str = "",
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Create an AgentCore Gateway with OAuth authentication.
     
@@ -271,7 +271,7 @@ async def agentcore_gateway_create(
         protocol_type: Protocol type (default: MCP)
         authorizer_type: Authorization type (default: CUSTOM_JWT)
         description: Human-readable description of gateway purpose
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -295,7 +295,7 @@ async def agentcore_gateway_add_lambda_target(
     lambda_arn: str,
     tool_schema: list[dict],
     target_description: str = "",
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Add a Lambda function as a gateway target with MCP tool schema.
     
@@ -311,7 +311,7 @@ async def agentcore_gateway_add_lambda_target(
             - description: What the tool does (string)
             - inputSchema: JSON Schema for tool inputs (object)
         target_description: Description of what this target does
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -329,7 +329,7 @@ async def agentcore_gateway_add_lambda_target(
 @mcp.tool()
 async def agentcore_gateway_list_targets(
     gateway_id: str,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """List all targets attached to a gateway.
     
@@ -338,7 +338,7 @@ async def agentcore_gateway_list_targets(
     
     Args:
         gateway_id: Gateway ID to list targets for
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -353,7 +353,7 @@ async def agentcore_gateway_list_targets(
 async def agentcore_gateway_delete_target(
     gateway_id: str,
     target_id: str,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Delete a target from AgentCore Gateway.
     
@@ -363,7 +363,7 @@ async def agentcore_gateway_delete_target(
     Args:
         gateway_id: Gateway ID
         target_id: Target ID to delete
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -378,7 +378,7 @@ async def agentcore_gateway_delete_target(
 @mcp.tool()
 async def agentcore_gateway_delete(
     gateway_id: str,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Delete an AgentCore Gateway.
     
@@ -387,7 +387,7 @@ async def agentcore_gateway_delete(
     
     Args:
         gateway_id: Gateway ID to delete
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -412,7 +412,7 @@ async def agentcore_runtime_configure(
     auto_create_ecr: bool = True,
     memory_mode: str = "NO_MEMORY",
     requirements_file: str = "requirements.txt",
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Configure AgentCore Runtime deployment settings.
     
@@ -428,7 +428,7 @@ async def agentcore_runtime_configure(
         auto_create_ecr: Automatically create ECR repository (default: True)
         memory_mode: Memory mode (default: NO_MEMORY)
         requirements_file: Python requirements file (default: requirements.txt)
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -450,7 +450,7 @@ async def agentcore_runtime_configure(
 async def agentcore_runtime_launch(
     env_vars: dict,
     auto_update_on_conflict: bool = True,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Deploy agent to AgentCore Runtime.
     
@@ -461,7 +461,7 @@ async def agentcore_runtime_launch(
         env_vars: Environment variables (MEMORY_ID, KNOWLEDGE_BASE_ID, GATEWAY_URL,
                  COGNITO_CLIENT_ID, COGNITO_CLIENT_SECRET, COGNITO_DISCOVERY_URL, etc.)
         auto_update_on_conflict: Automatically update if agent already exists (default: True)
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -475,7 +475,7 @@ async def agentcore_runtime_launch(
 
 @mcp.tool()
 async def agentcore_runtime_status(
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Check AgentCore Runtime deployment status.
     
@@ -483,7 +483,7 @@ async def agentcore_runtime_status(
     CREATE_FAILED, etc.
     
     Args:
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -495,7 +495,7 @@ async def agentcore_runtime_status(
 async def agentcore_runtime_invoke(
     payload: dict,
     bearer_token: str,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Invoke a deployed AgentCore Runtime agent.
     
@@ -504,7 +504,7 @@ async def agentcore_runtime_invoke(
     Args:
         payload: Request payload with 'prompt' and optional 'actor_id'
         bearer_token: OAuth bearer token from Cognito
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -518,7 +518,7 @@ async def agentcore_runtime_invoke(
 
 @mcp.tool()
 async def agentcore_runtime_delete(
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Delete an AgentCore Runtime agent deployment.
     
@@ -526,7 +526,7 @@ async def agentcore_runtime_delete(
     longer be accessible.
     
     Args:
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated script with code, filename, and instructions
@@ -540,7 +540,7 @@ async def agentcore_runtime_delete(
 
 @mcp.tool()
 async def agentcore_observability_get_dashboard_url(
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Get CloudWatch GenAI Observability dashboard URL.
     
@@ -550,7 +550,7 @@ async def agentcore_observability_get_dashboard_url(
     - Debugging: Pattern analysis, bottleneck identification
     
     Args:
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Dashboard URL and monitoring information
@@ -561,7 +561,7 @@ async def agentcore_observability_get_dashboard_url(
 @mcp.tool()
 async def agentcore_observability_get_logs_info(
     agent_arn: str,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Get CloudWatch log group information for viewing agent logs.
     
@@ -569,8 +569,8 @@ async def agentcore_observability_get_logs_info(
     Logs include all agent interactions, tool calls, errors, and performance data.
     
     Args:
-        agent_arn: Agent ARN (e.g., 'arn:aws:bedrock-agentcore:us-east-1:123:runtime/my_agent-ABC')
-        region: AWS region (default: us-east-1)
+        agent_arn: Agent ARN (e.g., 'arn:aws:bedrock-agentcore:us-west-2:123:runtime/my_agent-ABC')
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Log group name, agent ARN, and CLI commands
@@ -586,7 +586,7 @@ async def agentcore_observability_get_recent_logs(
     agent_arn: str,
     hours_back: int = 1,
     limit: int = 50,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Retrieve recent logs from CloudWatch for the deployed agent.
     
@@ -594,10 +594,10 @@ async def agentcore_observability_get_recent_logs(
     debugging and monitoring.
     
     Args:
-        agent_arn: Agent ARN (e.g., 'arn:aws:bedrock-agentcore:us-east-1:123:runtime/my_agent-ABC')
+        agent_arn: Agent ARN (e.g., 'arn:aws:bedrock-agentcore:us-west-2:123:runtime/my_agent-ABC')
         hours_back: How many hours back to retrieve logs (default: 1)
         limit: Maximum number of log events to retrieve (default: 50)
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Recent log events with timestamps and messages
@@ -626,7 +626,7 @@ async def generate_strands_agent(
     include_gateway: bool = False,
     model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     temperature: float = 0.3,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Generate standalone Strands Agent Python code with specified tools and integrations.
     
@@ -645,7 +645,7 @@ async def generate_strands_agent(
         include_gateway: Enable Gateway integration for MCP tools (default: False)
         model_id: Bedrock model ID (default: claude-sonnet-4-5)
         temperature: Model temperature 0.0-1.0 (default: 0.3)
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated agent code with filename and instructions
@@ -685,7 +685,7 @@ async def generate_agentcore_runtime_agent(
     additional_tools: Optional[list[str]] = None,
     model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     temperature: float = 0.3,
-    region: str = "us-east-1"
+    region: str = "us-west-2"
 ) -> dict:
     """Generate AgentCore Runtime-ready Strands Agent with integrations.
     
@@ -702,7 +702,7 @@ async def generate_agentcore_runtime_agent(
         additional_tools: Additional tool names to include (e.g., ['current_time'])
         model_id: Bedrock model ID (default: claude-sonnet-4-5)
         temperature: Model temperature 0.0-1.0 (default: 0.3)
-        region: AWS region (default: us-east-1)
+        region: AWS region (default: us-west-2)
     
     Returns:
         dict: Generated agent code with filename and instructions

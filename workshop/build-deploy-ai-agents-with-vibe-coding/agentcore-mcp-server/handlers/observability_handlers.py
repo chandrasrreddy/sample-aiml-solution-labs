@@ -11,7 +11,7 @@ import json
 async def handle_observability_get_dashboard_url(args: Dict) -> Dict:
     """Generate script to get CloudWatch GenAI Observability dashboard URL"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     
     # Generate Python script code
     code = f'''#!/usr/bin/env python3
@@ -46,7 +46,7 @@ print("\\nOpen this URL in your browser to view the dashboard")
 async def handle_observability_get_logs_info(args: Dict) -> Dict:
     """Generate script to get CloudWatch log group information"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     agent_arn = args["agent_arn"]
     
     # Generate Python script code
@@ -100,7 +100,7 @@ print(f"  {{recent_command}}")
 async def handle_observability_get_recent_logs(args: Dict) -> Dict:
     """Generate script to retrieve recent logs from CloudWatch"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     agent_arn = args["agent_arn"]
     limit = args.get("limit", 50)
     hours_back = args.get("hours_back", 1)
