@@ -10,7 +10,7 @@ from typing import Dict
 async def handle_create_runtime_execution_role_script(args: Dict) -> Dict:
     """Generate script to create IAM execution role for AgentCore Runtime"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     
     # Generate Python script code with validated minimal permissions
     code = f'''#!/usr/bin/env python3

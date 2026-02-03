@@ -15,7 +15,7 @@ async def handle_generate_strands_agent(args: Dict) -> Dict:
     system_prompt = args["system_prompt"]
     model_id = args.get("model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
     temperature = args.get("temperature", 0.3)
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     tools = args.get("tools", [])
     custom_tools = args.get("custom_tools", [])
     
@@ -83,17 +83,8 @@ bedrock_model = BedrockModel(model_id=MODEL_ID, temperature={temperature})
 # KNOWLEDGE BASE CONFIGURATION
 # ============================================================================
 
-kb_id = os.environ.get("KNOWLEDGE_BASE_ID", "NOT AVAILABLE")
-
-# Configure retrieve tool with Knowledge Base
-if kb_id != "NOT AVAILABLE":
-    retrieve = retrieve.with_config(
-        knowledgeBaseId=kb_id,
-        region=REGION
-    )
-    print(f"✓ Knowledge Base configured: {kb_id}")
-else:
-    print("⚠️  KNOWLEDGE_BASE_ID not set - retrieve tool will not work")
+kb_id = os.environ.get("KNOWLEDGE_BASE_ID", "YOUR_KB_ID_HERE")
+print(f"✓ Knowledge Base ID: {kb_id}")
 '''
     
     # Add Gateway helper functions
@@ -189,13 +180,13 @@ def create_memory_session_manager(memory_id: str, session_id: str = SESSION_ID, 
 '''
     
     # Add system prompt
-    kb_note = f'\\n- Knowledge Base (retrieve tool) for domain knowledge' if include_kb else ""
+    kb_note = f'\\n\\nWhen using the retrieve tool, always pass these parameters:\\n- knowledgeBaseId: {{kb_id}}\\n- region: {{REGION}}\\n- text: the search query' if include_kb else ""
     gateway_note = "\\n- Gateway tools for external operations" if include_gateway else ""
     memory_note = "\\n- Customer conversation history and preferences through memory" if include_memory else ""
     
     code += f'''
 # System prompt
-system_prompt = """{system_prompt}{kb_note}{gateway_note}{memory_note}"""
+system_prompt = f"""{system_prompt}{kb_note}{gateway_note}{memory_note}"""
 '''
     
     # Add custom tool definitions
@@ -436,18 +427,8 @@ app = BedrockAgentCoreApp()
 '''
     
     if include_kb:
-        code += '''kb_id = os.environ.get("KNOWLEDGE_BASE_ID", "NOT AVAILABLE")
-
-# Configure retrieve tool with Knowledge Base
-if kb_id != "NOT AVAILABLE":
-    from strands_tools import retrieve
-    retrieve = retrieve.with_config(
-        knowledgeBaseId=kb_id,
-        region=REGION
-    )
-    print(f"✓ Knowledge Base configured: {kb_id}")
-else:
-    print("⚠️  KNOWLEDGE_BASE_ID not set - retrieve tool will not work")
+        code += '''kb_id = os.environ.get("KNOWLEDGE_BASE_ID", "YOUR_KB_ID_HERE")
+print(f"✓ Knowledge Base ID: {kb_id}")
 '''
     
     # Remove module-level environment variable loading
@@ -511,12 +492,12 @@ def create_mcp_client():
 '''
     
     # System prompt
-    kb_note = f'\\n- Knowledge Base (retrieve tool with knowledgeBaseId="{{kb_id}}") for domain knowledge' if include_kb else ""
+    kb_note = f'\\n\\nWhen using the retrieve tool, always pass these parameters:\\n- knowledgeBaseId: {{kb_id}}\\n- region: {{REGION}}\\n- text: the search query' if include_kb else ""
     gateway_note = "\\n- Gateway tools for external operations" if include_gateway else ""
     memory_note = "\\n- Customer conversation history and preferences through memory" if include_memory else ""
     
     code += f'''
-system_prompt = """{system_prompt}{kb_note}{gateway_note}{memory_note}"""
+system_prompt = f"""{system_prompt}{kb_note}{gateway_note}{memory_note}"""
 
 @app.entrypoint
 def invoke(payload, context=None):

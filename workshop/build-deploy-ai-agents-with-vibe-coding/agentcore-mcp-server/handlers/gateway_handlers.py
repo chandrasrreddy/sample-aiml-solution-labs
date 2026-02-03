@@ -11,7 +11,7 @@ import json
 async def handle_gateway_create(args: Dict) -> Dict:
     """Generate script to create AgentCore Gateway with OAuth authentication"""
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     name = args["name"]
     role_arn = args["role_arn"]
     cognito_client_id = args["cognito_client_id"]
@@ -103,7 +103,7 @@ async def handle_gateway_add_lambda_target(args: Dict) -> Dict:
     and inlines them into the generated script for clarity.
     """
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     # gateway_id loaded from config file in generated script
     target_name = args["target_name"]
     lambda_arn = args["lambda_arn"]
@@ -182,7 +182,7 @@ async def handle_gateway_list_targets(args: Dict) -> Dict:
     Note: gateway_id is loaded from gateway_config.json in the generated script
     """
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     # gateway_id loaded from config file in generated script
     
     # Generate Python script code
@@ -233,7 +233,7 @@ async def handle_gateway_delete_target(args: Dict) -> Dict:
     Note: gateway_id and target_id are used from args
     """
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     # Use target_id from args (not from config file)
     target_id = args["target_id"]
     
@@ -309,7 +309,7 @@ async def handle_gateway_delete(args: Dict) -> Dict:
     Note: gateway_id is loaded from gateway_config.json in the generated script
     """
     
-    region = args.get("region", "us-east-1")
+    region = args.get("region", "us-west-2")
     # gateway_id loaded from config file in generated script
     
     # Generate Python script code

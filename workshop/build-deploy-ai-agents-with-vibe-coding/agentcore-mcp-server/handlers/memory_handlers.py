@@ -11,7 +11,7 @@ import json
 async def handle_memory_create(args: Dict) -> Dict:
     """Generate script to create AgentCore Memory with strategies"""
     
-    region = args.get("region") or "us-west-2"
+    region = args.get("region", "us-west-2")
     name = args["name"]
     description = args.get("description", "")
     strategies = args["strategies"]
@@ -92,7 +92,7 @@ print(f"✓ Configuration saved to memory_config.json")
 async def handle_memory_create_event(args: Dict) -> Dict:
     """Generate script to store conversation messages in Memory"""
     
-    region = args.get("region") or "us-west-2"
+    region = args.get("region", "us-west-2")
     memory_id = args["memory_id"]
     actor_id = args["actor_id"]
     session_id = args["session_id"]
@@ -158,12 +158,11 @@ print("✓ Memory processing complete!")
 async def handle_memory_retrieve(args: Dict) -> Dict:
     """Generate script to retrieve memories from Memory"""
     
-    region = args.get("region") or "us-west-2"
+    region = args.get("region", "us-west-2")
     memory_id = args["memory_id"]
     namespace = args["namespace"]
     query = args["query"]
     top_k = args.get("top_k", 3)
-    relevance_score = args.get("relevance_score", 0.2)
     
     # Generate Python script code
     code = f'''#!/usr/bin/env python3
@@ -218,7 +217,13 @@ try:
             else:
                 text = str(content)
             print(f"Content: {{text}}")
-            print(f"Relevance Score: {{memory.get('relevanceScore', 'N/A')}}")
+            
+            # Safe formatting for relevance score
+            relevance = memory.get('relevanceScore', 'N/A')
+            if isinstance(relevance, (int, float)):
+                print(f"Relevance Score: {{relevance:.3f}}")
+            else:
+                print(f"Relevance Score: {{relevance}}")
             print()
     else:
         print("⚠️  No memories found")
@@ -239,7 +244,7 @@ except Exception as e:
 async def handle_memory_delete(args: Dict) -> Dict:
     """Generate script to delete AgentCore Memory"""
     
-    region = args.get("region") or "us-west-2"
+    region = args.get("region", "us-west-2")
     memory_id = args["memory_id"]
     
     # Generate Python script code
