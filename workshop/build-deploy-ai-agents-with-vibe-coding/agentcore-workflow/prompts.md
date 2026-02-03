@@ -42,7 +42,11 @@ All built through conversation with Kiro!
 
 ### 📚 Learning Prompt 1: Understanding Strands Agents
 
-**Ask Kiro** (just copy and paste this): "What is Strands and how do I build agents with it?"
+**Ask Kiro** (just copy and paste this):
+
+```
+What is Strands and how do I build agents with it?
+```
 
 This helps you understand the framework before diving into code. Kiro will explain it in plain English!
 
@@ -52,7 +56,8 @@ This helps you understand the framework before diving into code. Kiro will expla
 
 **What to ask Kiro** (just copy and paste this):
 
-"Create a returns and refunds agent with these features:
+```
+Create a returns and refunds agent with these features:
 - Agent name: returns_refunds_agent
 - System prompt: You are a helpful returns and refunds assistant. Help customers check return eligibility, calculate refunds, and understand policies. Use the retrieve tool to access Amazon return policy documents for accurate information. Be friendly and accurate.
 - Region: us-west-2
@@ -66,7 +71,8 @@ This helps you understand the framework before diving into code. Kiro will expla
   - check_return_eligibility: checks if items can be returned based on purchase date and category
   - calculate_refund_amount: calculates refund based on price, condition, and return reason
   - format_policy_response: formats policy info in a customer-friendly way
-- Save to: 01_returns_refunds_agent.py"
+- Save to: 01_returns_refunds_agent.py
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -92,13 +98,15 @@ This helps you understand the framework before diving into code. Kiro will expla
 
 **What to ask Kiro** (just copy and paste this):
 
-"Create a test script called 02_test_agent.py that tests my returns agent with these questions:
+```
+Create a test script called 02_test_agent.py that tests my returns agent with these questions:
 - Import run_agent from 01_returns_refunds_agent.py using importlib
 - What time is it?
 - Can I return a laptop I purchased 25 days ago?
 - Calculate my refund for a $500 item returned due to defect in like-new condition
 - Explain the return policy for electronics in a simple way
-- Use the retrieve tool to search the knowledge base for 'Amazon return policy for electronics'"
+- Use the retrieve tool to search the knowledge base for 'Amazon return policy for electronics'
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -123,9 +131,9 @@ This helps you understand the framework before diving into code. Kiro will expla
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the test file 02_test_agent.py
-:::
+```
 
 **What happens**: Kiro runs the test script and shows you the agent's responses to all test questions.
 
@@ -149,7 +157,11 @@ Execute the test file 02_test_agent.py
 
 ### 📚 Learning Prompt 2: Understanding AgentCore Memory
 
-**Ask Kiro**: "What is AgentCore Memory and how does it help my agent remember things?"
+**Ask Kiro**:
+
+```
+What is AgentCore Memory and how does it help my agent remember things?
+```
 
 Learn about the three memory types: summaries (conversation context), preferences (what customers like), and semantic facts (important details).
 
@@ -159,12 +171,14 @@ Learn about the three memory types: summaries (conversation context), preference
 
 **What to ask Kiro**:
 
-"Create a script called 03_create_memory.py that sets up memory for my returns agent:
+```
+Create a script called 03_create_memory.py that sets up memory for my returns agent:
 - Region: us-west-2
 - Memory name: returns_refunds_memory
 - Description: Stores customer interactions, preferences, and return history
 - Include all three memory strategies: summary, preferences, and semantic
-- Save the memory ID to memory_config.json"
+- Save the memory ID to memory_config.json
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -189,9 +203,9 @@ Learn about the three memory types: summaries (conversation context), preference
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 03_create_memory.py
-:::
+```
 
 **What happens**: Kiro runs the script to create your memory storage in AWS.
 
@@ -209,12 +223,14 @@ Execute the script 03_create_memory.py
 
 **What to ask Kiro**:
 
-"Create a script called 04_seed_memory.py that adds sample customer conversations to memory:
+```
+Create a script called 04_seed_memory.py that adds sample customer conversations to memory:
 - Region: us-west-2
 - Customer ID: user_001
 - Add a conversation where the customer mentions they prefer email notifications and previously returned a defective laptop
 - Add another conversation where they ask about return windows for electronics
-- Wait 30 seconds after storing so the memory system can process and extract preferences"
+- Wait 30 seconds after storing so the memory system can process and extract preferences
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -240,9 +256,9 @@ Execute the script 03_create_memory.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 04_seed_memory.py
-:::
+```
 
 **What happens**: Kiro runs the script to populate memory with sample customer conversations.
 
@@ -260,12 +276,14 @@ Execute the script 04_seed_memory.py
 
 **What to ask Kiro**:
 
-"Create a script called 05_test_memory.py that:
+```
+Create a script called 05_test_memory.py that:
 - Region: us-west-2
 - Loads the memory ID from memory_config.json
 - Retrieves memories for user_001 from the preferences namespace
 - Searches for: 'customer preferences and communication'
-- Shows me what the agent remembers about this customer"
+- Shows me what the agent remembers about this customer
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -291,9 +309,9 @@ Execute the script 04_seed_memory.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 05_test_memory.py
-:::
+```
 
 **What happens**: Kiro runs the script to query and display stored memories.
 
@@ -311,7 +329,8 @@ Execute the script 05_test_memory.py
 
 **What to ask Kiro**:
 
-"Create a memory-enabled version of my returns agent:
+```
+Create a memory-enabled version of my returns agent:
 - Agent name: returns_agent_with_memory
 - System prompt: You are a personalized returns assistant who remembers customer preferences and history. Use the retrieve tool to access Amazon return policy documents for accurate information.
 - Region: us-west-2
@@ -319,7 +338,8 @@ Execute the script 05_test_memory.py
 - Load memory ID from memory_config.json
 - Load knowledge base ID from kb_config.json and configure retrieve tool
 - Include all three memory namespaces
-- Save to: 06_memory_enabled_agent.py"
+- Save to: 06_memory_enabled_agent.py
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -342,11 +362,13 @@ Execute the script 05_test_memory.py
 
 **What to ask Kiro**:
 
-"Create a test script called 07_test_memory_agent.py that:
+```
+Create a test script called 07_test_memory_agent.py that:
 - Imports the memory-enabled agent
 - Sets the memory ID from memory_config.json
 - Tests with user_001 asking: 'Hi! I'm thinking about returning something. What do you remember about my preferences?'
-- Shows me if the agent recalls their communication preferences and past return history"
+- Shows me if the agent recalls their communication preferences and past return history
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -372,9 +394,9 @@ Execute the script 05_test_memory.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 07_test_memory_agent.py
-:::
+```
 
 **What happens**: Kiro runs the test to verify your agent can access and use stored memories in conversation.
 
@@ -398,7 +420,11 @@ Execute the script 07_test_memory_agent.py
 
 ### 📚 Learning Prompt 3: Understanding AgentCore Gateway
 
-**Ask Kiro**: "What is AgentCore Gateway and how does it let my agent call external services?"
+**Ask Kiro**:
+
+```
+What is AgentCore Gateway and how does it let my agent call external services?
+```
 
 Learn how gateways securely connect agents to Lambda functions, APIs, and databases - think of it as a secure phone line between your agent and other systems.
 
@@ -408,14 +434,16 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 
 **What to ask Kiro**:
 
-"Create a script called 08_create_cognito.py that sets up authentication for my gateway:
+```
+Create a script called 08_create_cognito.py that sets up authentication for my gateway:
 - Region: us-west-2
 - Create a Cognito User Pool (this is like a secure login system)
 - Add a domain prefix for OAuth endpoints (required for token generation)
 - Add OAuth support with read/write permissions
 - Create an app client for machine-to-machine authentication (so the agent can securely call the gateway)
 - Save all the credentials to cognito_config.json including the domain URL and token endpoint
-- **CRITICAL**: Use the IDP-based discovery URL format: https://cognito-idp.us-west-2.amazonaws.com/{user_pool_id}/.well-known/openid-configuration (NOT the hosted UI domain format)"
+- **CRITICAL**: Use the IDP-based discovery URL format: https://cognito-idp.us-west-2.amazonaws.com/{user_pool_id}/.well-known/openid-configuration (NOT the hosted UI domain format)
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -443,9 +471,9 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 08_create_cognito.py
-:::
+```
 
 **What happens**: Kiro runs the script to create your authentication system in AWS.
 
@@ -463,11 +491,13 @@ Execute the script 08_create_cognito.py
 
 **What to ask Kiro**:
 
-"Create a script called 09_create_gateway_role.py that:
+```
+Create a script called 09_create_gateway_role.py that:
 - Region: us-west-2
 - Creates an IAM role for the gateway
 - Grants permission to invoke Lambda functions
-- Saves the role ARN to gateway_role_config.json"
+- Saves the role ARN to gateway_role_config.json
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -493,9 +523,9 @@ Execute the script 08_create_cognito.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 09_create_gateway_role.py
-:::
+```
 
 **What happens**: Kiro runs the script to create the IAM role with Lambda permissions.
 
@@ -513,14 +543,16 @@ Execute the script 09_create_gateway_role.py
 
 **What to ask Kiro**:
 
-"Create a script called 10_create_lambda.py that creates a Lambda function:
+```
+Create a script called 10_create_lambda.py that creates a Lambda function:
 - Region: us-west-2
 - Function name: OrderLookupFunction
 - Purpose: Look up order details by order ID (like ORD-001, ORD-002)
 - Returns: order_id, product_name, purchase_date, amount, and whether it's eligible for return
 - Use mock data with 3 sample orders: a recent laptop, an old phone, and a defective tablet
 - Save Lambda ARN and tool schema to lambda_config.json
-- Tool name: lookup_order"
+- Tool name: lookup_order
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -546,9 +578,9 @@ Execute the script 09_create_gateway_role.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 10_create_lambda.py
-:::
+```
 
 **What happens**: Kiro runs the script to deploy your Lambda function to AWS.
 
@@ -566,11 +598,13 @@ Execute the script 10_create_lambda.py
 
 **What to ask Kiro**:
 
-"Create a script called 11_create_gateway.py that:
+```
+Create a script called 11_create_gateway.py that:
 - Region: us-west-2
 - Creates a gateway named ReturnsRefundsGateway
 - Loads Cognito and IAM role config
-- Saves gateway ID and URL to gateway_config.json"
+- Saves gateway ID and URL to gateway_config.json
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -597,9 +631,9 @@ Execute the script 10_create_lambda.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 11_create_gateway.py
-:::
+```
 
 **What happens**: Kiro runs the script to create your AgentCore Gateway in AWS.
 
@@ -617,11 +651,13 @@ Execute the script 11_create_gateway.py
 
 **What to ask Kiro**:
 
-"Create a script called 12_add_lambda_to_gateway.py that:
+```
+Create a script called 12_add_lambda_to_gateway.py that:
 - Region: us-west-2
 - Loads gateway and Lambda config
 - Registers the OrderLookupFunction as a gateway target
-- Names it: OrderLookup"
+- Names it: OrderLookup
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -647,9 +683,9 @@ Execute the script 11_create_gateway.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 12_add_lambda_to_gateway.py
-:::
+```
 
 **What happens**: Kiro runs the script to register your Lambda function with the gateway.
 
@@ -667,11 +703,13 @@ Execute the script 12_add_lambda_to_gateway.py
 
 **What to ask Kiro**:
 
-"Create a script called 13_list_gateway_targets.py that:
+```
+Create a script called 13_list_gateway_targets.py that:
 - Region: us-west-2
 - Loads the gateway ID
 - Lists all registered targets
-- Displays their status"
+- Displays their status
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -699,9 +737,9 @@ Execute the script 12_add_lambda_to_gateway.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 13_list_gateway_targets.py
-:::
+```
 
 **What happens**: Kiro runs the script to list all registered gateway targets.
 
@@ -719,7 +757,8 @@ Execute the script 13_list_gateway_targets.py
 
 **What to ask Kiro**:
 
-"Create the complete returns agent with memory and gateway:
+```
+Create the complete returns agent with memory and gateway:
 - Agent name: full_featured_returns_agent
 - System prompt: You are a returns assistant with memory and order lookup capabilities. Remember customer preferences, look up order details, and use the retrieve tool to access Amazon return policy documents for accurate information.
 - Region: us-west-2
@@ -727,7 +766,8 @@ Execute the script 13_list_gateway_targets.py
 - Load configs from: memory_config.json, gateway_config.json, cognito_config.json, kb_config.json
 - Include memory and gateway integration
 - Configure retrieve tool with knowledge base ID
-- Save to: 14_full_agent.py"
+- Save to: 14_full_agent.py
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -752,14 +792,16 @@ Execute the script 13_list_gateway_targets.py
 
 **What to ask Kiro**:
 
-"Create a test script called 15_test_full_agent.py that:
+```
+Create a test script called 15_test_full_agent.py that:
 - Loads all configuration files
 - Sets up environment variables
 - Tests with user_001 asking: 'Hi! Can you look up my order ORD-001 and tell me if I can return it? Remember, I prefer email updates.'
 - Verifies the agent can:
   - Remember the customer prefers email (from memory)
   - Look up order ORD-001 details (from Lambda via gateway)
-  - Combine both to give a personalized response"
+  - Combine both to give a personalized response
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -787,9 +829,9 @@ Execute the script 13_list_gateway_targets.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 15_test_full_agent.py
-:::
+```
 
 **What happens**: Kiro runs the comprehensive test showing all capabilities working together.
 
@@ -814,7 +856,11 @@ Execute the script 15_test_full_agent.py
 
 ### 📚 Learning Prompt 4: Understanding AgentCore Runtime
 
-**Ask Kiro**: "What is AgentCore Runtime and how does it deploy my agent to production?"
+**Ask Kiro**:
+
+```
+What is AgentCore Runtime and how does it deploy my agent to production?
+```
 
 Learn about serverless deployment (no servers to manage!), auto-scaling (handles traffic spikes automatically), and built-in monitoring.
 
@@ -824,7 +870,8 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 
 **What to ask Kiro**:
 
-"Create a script called 16_create_runtime_role.py that creates an IAM role for runtime with permissions for:
+```
+Create a script called 16_create_runtime_role.py that creates an IAM role for runtime with permissions for:
 - Region: us-west-2
 - Bedrock model access: Resource "*", Actions: InvokeModel, InvokeModelWithResponseStream
 - Memory: bedrock-agentcore:GetMemory, CreateEvent, GetLastKTurns, RetrieveMemory, ListEvents
@@ -834,7 +881,8 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 - Gateway: bedrock-agentcore:InvokeGateway, GetGateway, ListGatewayTargets
 - ECR: ecr:GetAuthorizationToken, BatchCheckLayerAvailability, GetDownloadUrlForLayer, BatchGetImage
 - Trust Policy: bedrock-agentcore.amazonaws.com
-- Save role ARN to runtime_execution_role_config.json"
+- Save role ARN to runtime_execution_role_config.json
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -862,9 +910,9 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 16_create_runtime_role.py
-:::
+```
 
 **What happens**: Kiro runs the script to create the IAM role with all runtime permissions.
 
@@ -882,7 +930,8 @@ Execute the script 16_create_runtime_role.py
 
 **What to ask Kiro**:
 
-"Create the runtime-ready version of my agent:
+```
+Create the runtime-ready version of my agent:
 - Agent name: returns_agent_runtime
 - System prompt: Production returns assistant with full memory and gateway capabilities. Use the retrieve tool to access Amazon return policy documents for accurate information.
 - Region: us-west-2
@@ -891,7 +940,8 @@ Execute the script 16_create_runtime_role.py
 - Include memory and gateway integration
 - Configure retrieve tool with knowledge base ID
 - Add comprehensive error handling to catch and log any failures
-- Save to: 17_runtime_agent.py"
+- Save to: 17_runtime_agent.py
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -917,12 +967,14 @@ Execute the script 16_create_runtime_role.py
 
 **What to ask Kiro**:
 
-"Create a requirements.txt file for my agent with these packages:
+```
+Create a requirements.txt file for my agent with these packages:
 - strands-agents (latest version)
 - strands-agents-tools (latest version)
 - bedrock-agentcore (latest version)
 - boto3 (latest version)
-- Any other dependencies needed for the runtime agent"
+- Any other dependencies needed for the runtime agent
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -946,7 +998,8 @@ Execute the script 16_create_runtime_role.py
 
 **What to ask Kiro**:
 
-"Create a script called 19_deploy_agent.py that:
+```
+Create a script called 19_deploy_agent.py that:
 - Loads all configuration files (memory, gateway, cognito, runtime execution role, kb_config)
 - Configures runtime deployment settings:
   - Entrypoint: 17_runtime_agent.py
@@ -956,7 +1009,8 @@ Execute the script 16_create_runtime_role.py
   - Region: us-west-2
 - Sets environment variables for memory, gateway, cognito, and knowledge base (KNOWLEDGE_BASE_ID from kb_config.json)
 - Deploys to AgentCore Runtime
-- Saves agent ARN to runtime_config.json"
+- Saves agent ARN to runtime_config.json
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -986,9 +1040,9 @@ Execute the script 16_create_runtime_role.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 19_deploy_agent.py
-:::
+```
 
 **What happens**: Kiro runs the deployment script to launch your agent to production (takes 5-10 minutes).
 
@@ -1008,11 +1062,13 @@ Execute the script 19_deploy_agent.py
 
 **What to ask Kiro**:
 
-"Create a script called 20_check_status.py that:
+```
+Create a script called 20_check_status.py that:
 - Region: us-west-2
 - Checks deployment status
 - Monitors until READY or FAILED
-- Displays current state"
+- Displays current state
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -1040,9 +1096,9 @@ Execute the script 19_deploy_agent.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 20_check_status.py
-:::
+```
 
 **What happens**: Kiro runs the script to check your agent's deployment status.
 
@@ -1061,11 +1117,13 @@ Execute the script 20_check_status.py
 
 **What to ask Kiro**:
 
-"Create a script called 21_invoke_agent.py that:
+```
+Create a script called 21_invoke_agent.py that:
 - Loads Cognito credentials from cognito_config.json
 - Gets an OAuth token for authentication
 - Invokes the deployed agent with user_001 asking: 'Can you look up my order ORD-001 and help me with a return?'
-- Displays the full response"
+- Displays the full response
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -1093,9 +1151,9 @@ Execute the script 20_check_status.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 21_invoke_agent.py
-:::
+```
 
 **What happens**: Kiro runs the script to test your live production agent with a real customer query.
 
@@ -1118,7 +1176,11 @@ Execute the script 21_invoke_agent.py
 
 ### 📚 Learning Prompt 5: Understanding Observability
 
-**Ask Kiro**: "How do I monitor my deployed agent and view its logs?"
+**Ask Kiro**:
+
+```
+How do I monitor my deployed agent and view its logs?
+```
 
 Learn about CloudWatch dashboards (your agent's health monitor), traces (see exactly what your agent is doing), and log analysis (debug when things go wrong).
 
@@ -1128,10 +1190,12 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 
 **What to ask Kiro**:
 
-"Create a script called 22_get_dashboard.py that:
+```
+Create a script called 22_get_dashboard.py that:
 - Region: us-west-2
 - Gets the CloudWatch GenAI Observability dashboard URL
-- Displays the link to access monitoring"
+- Displays the link to access monitoring
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -1157,9 +1221,9 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 22_get_dashboard.py
-:::
+```
 
 **What happens**: Kiro runs the script to retrieve your monitoring dashboard URL.
 
@@ -1177,11 +1241,13 @@ Execute the script 22_get_dashboard.py
 
 **What to ask Kiro**:
 
-"Create a script called 23_get_logs_info.py that:
+```
+Create a script called 23_get_logs_info.py that:
 - Region: us-west-2
 - Loads agent ARN from runtime_config.json
 - Gets the CloudWatch log group information
-- Displays the log group name and AWS CLI commands for viewing logs"
+- Displays the log group name and AWS CLI commands for viewing logs
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -1208,9 +1274,9 @@ Execute the script 22_get_dashboard.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 23_get_logs_info.py
-:::
+```
 
 **What happens**: Kiro runs the script to get your log group information and CLI commands.
 
@@ -1234,7 +1300,8 @@ Execute the script 23_get_logs_info.py
 
 **What to ask Kiro**:
 
-"Create a script called 24_cleanup_aws.py that safely deletes all the AWS resources we created:
+```
+Create a script called 24_cleanup_aws.py that safely deletes all the AWS resources we created:
 - Region: us-west-2
 - Runtime agent (the deployed agent)
 - Gateway targets FIRST, then wait 5 seconds before deleting the gateway (proper deletion order)
@@ -1244,7 +1311,8 @@ Execute the script 23_get_logs_info.py
 - IAM roles (all permissions we created)
 - ECR repository (Docker container storage)
 - Include a 5-second warning before deletion so I don't accidentally delete everything
-- Handle missing resources gracefully (don't error if something's already gone)"
+- Handle missing resources gracefully (don't error if something's already gone)
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -1287,9 +1355,9 @@ Execute the script 23_get_logs_info.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 24_cleanup_aws.py
-:::
+```
 
 **What happens**: Kiro runs the cleanup script to delete all AWS resources (with a 5-second warning).
 
@@ -1309,7 +1377,8 @@ Execute the script 24_cleanup_aws.py
 
 **What to ask Kiro**:
 
-"Create a script called 25_cleanup_files.py that deletes:
+```
+Create a script called 25_cleanup_files.py that deletes:
 - All Python scripts (01-25)
 - All config JSON files
 - Runtime configuration files
@@ -1318,7 +1387,8 @@ Execute the script 24_cleanup_aws.py
 - Generated agent files
 - .bedrock_agentcore.yaml file
 - Include a 5-second warning
-- Handle missing files gracefully"
+- Handle missing files gracefully
+```
 
 **⚠️ VALIDATION:**
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
@@ -1349,9 +1419,9 @@ Execute the script 24_cleanup_aws.py
 
 **What to ask Kiro** (just copy and paste this):
 
-:::code{showCopyAction=true}
+```
 Execute the script 25_cleanup_files.py
-:::
+```
 
 **What happens**: Kiro runs the cleanup script to delete all local workshop files (with a 5-second warning).
 
