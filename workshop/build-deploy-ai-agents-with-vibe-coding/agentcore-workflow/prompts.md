@@ -119,6 +119,26 @@ This helps you understand the framework before diving into code. Kiro will expla
 
 ---
 
+## 🚀 Run Your Test
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the test file 02_test_agent.py
+:::
+
+**What happens**: Kiro runs the test script and shows you the agent's responses to all test questions.
+
+**Expected outcome**:
+- All 5 tools execute successfully
+- You see real-time responses from your agent
+- Knowledge base retrieval returns relevant policy information
+- Any errors are displayed for troubleshooting
+
+**Why this matters**: Seeing your agent in action validates everything works before moving to the next step.
+
+---
+
 ## Part 2: Add Memory to Remember Customers
 
 **What you'll learn**: Give your agent memory so it remembers customer preferences and past interactions - just like a good customer service rep would!
@@ -165,6 +185,26 @@ Learn about the three memory types: summaries (conversation context), preference
 
 ---
 
+## 🚀 Run Memory Creation
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 03_create_memory.py
+:::
+
+**What happens**: Kiro runs the script to create your memory storage in AWS.
+
+**Expected outcome**:
+- Memory resource created in AWS (takes ~3 minutes)
+- Memory ID saved to memory_config.json
+- Success message displayed
+- Any errors are shown for troubleshooting
+
+**Why this matters**: Verify the memory infrastructure is set up correctly before adding data.
+
+---
+
 ### Prompt 4: Add Sample Customer Data
 
 **What to ask Kiro**:
@@ -196,6 +236,26 @@ Learn about the three memory types: summaries (conversation context), preference
 
 ---
 
+## 🚀 Run Memory Seeding
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 04_seed_memory.py
+:::
+
+**What happens**: Kiro runs the script to populate memory with sample customer conversations.
+
+**Expected outcome**:
+- Sample conversations stored successfully
+- 30-second wait for memory processing
+- Success confirmation displayed
+- Memory system ready for retrieval testing
+
+**Why this matters**: Confirm the data is stored correctly before testing retrieval.
+
+---
+
 ### Prompt 5: Test Memory Retrieval
 
 **What to ask Kiro**:
@@ -224,6 +284,26 @@ Learn about the three memory types: summaries (conversation context), preference
 - Time: Takes ~5 seconds
 
 **Why this matters**: Verify memory works before integrating it with your agent.
+
+---
+
+## 🚀 Run Memory Retrieval Test
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 05_test_memory.py
+:::
+
+**What happens**: Kiro runs the script to query and display stored memories.
+
+**Expected outcome**:
+- Retrieved memories displayed
+- Customer preferences shown
+- Return history visible
+- Confirms memory retrieval works correctly
+
+**Why this matters**: Validate the memory system can retrieve stored information before integrating with your agent.
 
 ---
 
@@ -288,6 +368,26 @@ Learn about the three memory types: summaries (conversation context), preference
 
 ---
 
+## 🚀 Run Memory Agent Test
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 07_test_memory_agent.py
+:::
+
+**What happens**: Kiro runs the test to verify your agent can access and use stored memories in conversation.
+
+**Expected outcome**:
+- Agent responds with personalized information
+- References customer preferences (email notifications)
+- Recalls past interactions (defective laptop return)
+- Demonstrates memory integration works correctly
+
+**Why this matters**: See your memory-enabled agent in action and confirm it provides personalized service.
+
+---
+
 ## Part 3: Connect External Tools via Gateway
 
 **What you'll learn**: Add a Lambda function that looks up real order details from a database, connected securely through a gateway. This is how your agent accesses external systems!
@@ -339,6 +439,26 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 
 ---
 
+## 🚀 Run Cognito Setup
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 08_create_cognito.py
+:::
+
+**What happens**: Kiro runs the script to create your authentication system in AWS.
+
+**Expected outcome**:
+- Cognito User Pool created (~20 seconds)
+- Domain and app client configured
+- Credentials saved to cognito_config.json
+- Success messages displayed
+
+**Why this matters**: Verify authentication is set up correctly before creating the gateway.
+
+---
+
 ### Prompt 9: Create Gateway Permissions
 
 **What to ask Kiro**:
@@ -366,6 +486,26 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 - Time: Takes ~10 seconds
 
 **Why this matters**: The gateway needs permission to call Lambda on behalf of your agent.
+
+---
+
+## 🚀 Run Gateway Role Creation
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 09_create_gateway_role.py
+:::
+
+**What happens**: Kiro runs the script to create the IAM role with Lambda permissions.
+
+**Expected outcome**:
+- IAM role created successfully
+- Lambda invoke policy attached
+- Role ARN saved to gateway_role_config.json
+- Ready for gateway creation
+
+**Why this matters**: Confirm the gateway has proper permissions before proceeding.
 
 ---
 
@@ -402,6 +542,26 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 
 ---
 
+## 🚀 Run Lambda Creation
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 10_create_lambda.py
+:::
+
+**What happens**: Kiro runs the script to deploy your Lambda function to AWS.
+
+**Expected outcome**:
+- Lambda function deployed successfully
+- Function ARN displayed
+- Tool schema saved to lambda_config.json
+- Ready to connect to gateway
+
+**Why this matters**: Verify the Lambda function is deployed before connecting it to the gateway.
+
+---
+
 ### Prompt 11: Create the Gateway
 
 **What to ask Kiro**:
@@ -430,6 +590,26 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 - Time: Takes ~10 seconds
 
 **Why this matters**: The gateway is the secure bridge between your agent and Lambda function.
+
+---
+
+## 🚀 Run Gateway Creation
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 11_create_gateway.py
+:::
+
+**What happens**: Kiro runs the script to create your AgentCore Gateway in AWS.
+
+**Expected outcome**:
+- Gateway created successfully
+- Gateway ID and URL displayed
+- Configuration saved to gateway_config.json
+- Ready to register Lambda targets
+
+**Why this matters**: Confirm the gateway is created before connecting Lambda functions.
 
 ---
 
@@ -463,6 +643,26 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 
 ---
 
+## 🚀 Run Lambda Registration
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 12_add_lambda_to_gateway.py
+:::
+
+**What happens**: Kiro runs the script to register your Lambda function with the gateway.
+
+**Expected outcome**:
+- Lambda registered as gateway target
+- Target ID displayed
+- Connection confirmed
+- Ready for verification
+
+**Why this matters**: Verify the Lambda is connected to the gateway before testing.
+
+---
+
 ### Prompt 13: Verify Gateway Setup
 
 **What to ask Kiro**:
@@ -492,6 +692,26 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 - Time: Takes ~5 seconds
 
 **Why this matters**: Always verify setup before integration - it's way easier to fix issues now than after everything's connected!
+
+---
+
+## 🚀 Run Gateway Verification
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 13_list_gateway_targets.py
+:::
+
+**What happens**: Kiro runs the script to list all registered gateway targets.
+
+**Expected outcome**:
+- Gateway targets listed
+- OrderLookup target displayed with status
+- Confirms gateway configuration is correct
+- Note: May show 0 targets initially due to AWS eventual consistency
+
+**Why this matters**: Verify all components are connected before creating the full agent.
 
 ---
 
@@ -563,6 +783,27 @@ Learn how gateways securely connect agents to Lambda functions, APIs, and databa
 
 ---
 
+## 🚀 Run Full Agent Test
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 15_test_full_agent.py
+:::
+
+**What happens**: Kiro runs the comprehensive test showing all capabilities working together.
+
+**Expected outcome**:
+- Agent responds with personalized information
+- Order details retrieved from Lambda
+- Memory preferences recalled
+- All systems integrated successfully
+- Complete response displayed
+
+**Why this matters**: See your complete agent in action with memory, gateway, and knowledge base all working together.
+
+---
+
 ## Part 4: Deploy to Production
 
 **What you'll learn**: Deploy your agent to AgentCore Runtime - this is where your agent goes from a local script to a live, scalable service that can handle real customer requests 24/7!
@@ -614,6 +855,26 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 - Time: Takes ~20 seconds
 
 **Why this matters**: Runtime needs these permissions to run your agent and access AWS services.
+
+---
+
+## 🚀 Run Runtime Role Creation
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 16_create_runtime_role.py
+:::
+
+**What happens**: Kiro runs the script to create the IAM role with all runtime permissions.
+
+**Expected outcome**:
+- IAM role created successfully
+- All policies attached (Bedrock, Memory, Knowledge Base, CloudWatch, X-Ray, Gateway, ECR)
+- Role ARN saved to runtime_execution_role_config.json
+- Ready for agent deployment
+
+**Why this matters**: Verify runtime permissions are set up correctly before deploying your agent.
 
 ---
 
@@ -721,6 +982,28 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 
 ---
 
+## 🚀 Run Agent Deployment
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 19_deploy_agent.py
+:::
+
+**What happens**: Kiro runs the deployment script to launch your agent to production (takes 5-10 minutes).
+
+**Expected outcome**:
+- Deployment initiated successfully
+- CodeBuild project created
+- Docker container built and pushed to ECR
+- Agent deployed to AgentCore Runtime
+- Agent ARN saved to runtime_config.json
+- Time: ~5-10 minutes (grab a coffee!)
+
+**Why this matters**: Your agent is now going live in production - this is the big moment!
+
+---
+
 ### Prompt 20: Monitor Deployment
 
 **What to ask Kiro**:
@@ -753,6 +1036,27 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 
 ---
 
+## 🚀 Run Status Check
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 20_check_status.py
+:::
+
+**What happens**: Kiro runs the script to check your agent's deployment status.
+
+**Expected outcome**:
+- Current deployment status displayed
+- If still deploying: "⏳ Agent deployment in progress..."
+- If ready: "✓ Agent is READY to receive requests!"
+- If failed: Error details displayed
+- Note: Run multiple times until status shows READY
+
+**Why this matters**: Monitor deployment progress and know when your agent is ready to test.
+
+---
+
 ### Prompt 21: Test Production Agent
 
 **What to ask Kiro**:
@@ -782,6 +1086,27 @@ Learn about serverless deployment (no servers to manage!), auto-scaling (handles
 - Time: Takes ~10 seconds
 
 **Why this matters**: Verify your production agent works correctly.
+
+---
+
+## 🚀 Run Production Test
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 21_invoke_agent.py
+:::
+
+**What happens**: Kiro runs the script to test your live production agent with a real customer query.
+
+**Expected outcome**:
+- OAuth token obtained successfully
+- Agent invoked in production
+- Complete response displayed
+- Shows memory, gateway, and knowledge base working together
+- Confirms production agent is fully operational
+
+**Why this matters**: Validate your production agent handles real requests correctly before going live to customers.
 
 ---
 
@@ -828,6 +1153,26 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 
 ---
 
+## 🚀 Run Dashboard Access
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 22_get_dashboard.py
+:::
+
+**What happens**: Kiro runs the script to retrieve your monitoring dashboard URL.
+
+**Expected outcome**:
+- Dashboard URL displayed
+- Direct link to CloudWatch GenAI Observability
+- Ready to view performance metrics
+- Access to request traces and usage patterns
+
+**Why this matters**: Get quick access to your agent's health monitoring dashboard.
+
+---
+
 ### Prompt 23: Access Agent Logs
 
 **What to ask Kiro**:
@@ -856,6 +1201,26 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 - Time: Takes ~2 seconds
 
 **Why this matters**: Logs help you debug issues and understand agent behavior - this gives you the log group name and commands to access them whenever you need!
+
+---
+
+## 🚀 Run Log Info Retrieval
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 23_get_logs_info.py
+:::
+
+**What happens**: Kiro runs the script to get your log group information and CLI commands.
+
+**Expected outcome**:
+- Log group name displayed
+- Agent ARN shown
+- AWS CLI commands provided for viewing logs
+- Ready to tail and search logs
+
+**Why this matters**: Get the information you need to access and search your agent's logs for debugging.
 
 ---
 
@@ -918,6 +1283,28 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 
 ---
 
+## 🚀 Run AWS Cleanup
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 24_cleanup_aws.py
+:::
+
+**What happens**: Kiro runs the cleanup script to delete all AWS resources (with a 5-second warning).
+
+**Expected outcome**:
+- 5-second warning countdown displayed
+- All AWS resources deleted in proper order
+- Runtime agent, gateway, memory, Lambda, Cognito, IAM roles removed
+- Success confirmations for each deletion
+- Time: ~70 seconds (includes wait times)
+- No ongoing AWS charges
+
+**Why this matters**: Avoid unexpected AWS bills by removing all workshop resources.
+
+---
+
 ### Prompt 25: Clean Up Local Files
 
 **What to ask Kiro**:
@@ -955,6 +1342,28 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 - Result: Clean workspace ready for next workshop
 
 **Why this matters**: Return your workspace to a clean state after the workshop - start fresh next time without old files cluttering things up!
+
+---
+
+## 🚀 Run File Cleanup
+
+**What to ask Kiro** (just copy and paste this):
+
+:::code{showCopyAction=true}
+Execute the script 25_cleanup_files.py
+:::
+
+**What happens**: Kiro runs the cleanup script to delete all local workshop files (with a 5-second warning).
+
+**Expected outcome**:
+- 5-second warning countdown displayed
+- All Python scripts deleted (01-25)
+- All config JSON files removed
+- Runtime and Docker files cleaned up
+- Clean workspace ready for next time
+- Time: ~5 seconds
+
+**Why this matters**: Clean workspace means no confusion when you start your next project.
 
 ---
 
