@@ -872,10 +872,10 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 "Create a script called 24_cleanup_aws.py that safely deletes all the AWS resources we created:
 - Region: us-west-2
 - Runtime agent (the deployed agent)
-- Gateway and its targets (the secure connection)
+- Gateway targets FIRST, then wait 5 seconds before deleting the gateway (proper deletion order)
 - Memory resource (stored customer data)
 - Lambda function and its IAM roles (the order lookup function)
-- Cognito user pool (authentication system)
+- Cognito domain FIRST, then user pool (proper deletion order)
 - IAM roles (all permissions we created)
 - ECR repository (Docker container storage)
 - Include a 5-second warning before deletion so I don't accidentally delete everything
@@ -887,7 +887,7 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
 4. If MCP fails, STOP and ask user - do NOT create code manually
 
-**What happens**: Kiro creates a comprehensive cleanup script that removes everything in the right order.
+**What happens**: Kiro creates a comprehensive cleanup script that removes everything in the proper order.
 
 **Expected outcome**:
 - File created: `24_cleanup_aws.py`
@@ -896,17 +896,23 @@ Learn about CloudWatch dashboards (your agent's health monitor), traces (see exa
 - Output: "Deleting runtime agent..."
 - Output: "✓ Runtime agent deleted"
 - Output: "Deleting gateway targets..."
+- Output: "✓ Gateway targets deleted"
+- Output: "Waiting 5 seconds before deleting gateway..."
 - Output: "✓ Gateway deleted"
 - Output: "Deleting memory..."
 - Output: "✓ Memory deleted"
 - Output: "Deleting Lambda..."
 - Output: "✓ Lambda deleted"
+- Output: "Deleting Cognito domain..."
+- Output: "✓ Cognito domain deleted"
+- Output: "Deleting Cognito user pool..."
+- Output: "✓ Cognito user pool deleted"
 - Output: "Deleting IAM roles..."
 - Output: "✓ All AWS resources cleaned up"
-- Time: Takes ~60 seconds
+- Time: Takes ~70 seconds (includes wait times for proper deletion)
 - Note: Handles missing resources gracefully (no errors if already deleted)
 
-**Why this matters**: Avoid unexpected AWS charges by cleaning up workshop resources - AWS bills can add up fast if you leave things running!
+**Why this matters**: Avoid unexpected AWS charges by cleaning up workshop resources - AWS bills can add up fast if you leave things running! Proper deletion order prevents errors.
 
 **WARNING**: This permanently deletes everything. Make sure you've saved any important data!
 
