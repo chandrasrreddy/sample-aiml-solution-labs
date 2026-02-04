@@ -77,7 +77,7 @@ Create a returns and refunds agent with these features:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro generates a complete Strands agent with all the tools ready to use.
@@ -111,7 +111,7 @@ Create a test script called 02_test_agent.py that tests my returns agent with th
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a test script that validates all your agent's tools work correctly, including the retrieve tool accessing the knowledge base.
@@ -183,7 +183,7 @@ Create a script called 03_create_memory.py that sets up memory for my returns ag
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that sets up your memory storage in AWS.
@@ -235,7 +235,7 @@ Create a script called 04_seed_memory.py that adds sample customer conversations
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that populates your memory with realistic test conversations.
@@ -288,7 +288,7 @@ Create a script called 05_test_memory.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that queries the memory to see what was learned from the conversations.
@@ -344,7 +344,7 @@ Create a memory-enabled version of my returns agent:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates an upgraded version of your agent that remembers customers while keeping all the original return/refund tools.
@@ -373,7 +373,7 @@ Create a test script called 07_test_memory_agent.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a test to verify the agent can actually access and use stored memories in conversation.
@@ -441,20 +441,14 @@ Create a script called 08_create_cognito.py that sets up authentication for my g
 - Add a domain prefix for OAuth endpoints (required for token generation)
 - Add OAuth support with read/write permissions
 - Create an app client for machine-to-machine authentication (so the agent can securely call the gateway)
-- Save all the credentials to cognito_config.json with these EXACT keys:
-  - user_pool_id: The Cognito User Pool ID
-  - domain_prefix: The domain prefix (NOT "domain")
-  - client_id: The app client ID
-  - client_secret: The app client secret
-  - token_endpoint: The OAuth token endpoint URL
-  - discovery_url: The OpenID discovery URL
+- Save all the credentials to cognito_config.json including the domain URL and token endpoint
 - **CRITICAL**: Use the IDP-based discovery URL format: https://cognito-idp.us-west-2.amazonaws.com/{user_pool_id}/.well-known/openid-configuration (NOT the hosted UI domain format)
 
 ⚠️ VALIDATION:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that sets up secure authentication with OAuth support - think of this as creating a secure ID badge system for your agent.
@@ -466,7 +460,7 @@ Create a script called 08_create_cognito.py that sets up authentication for my g
 - Output: "✓ Domain created: returns-gateway-xxxxx"
 - Output: "✓ Resource server created with scopes"
 - Output: "✓ App client created: client-xxxxx"
-- File created: `cognito_config.json` with user_pool_id, domain_prefix, client_id, client_secret, token_endpoint, discovery_url
+- File created: `cognito_config.json` with client_id, client_secret, domain_url, token_endpoint, discovery_url
 - Time: Takes ~20 seconds
 
 **Why this matters**: Gateways need authentication to ensure only authorized agents can call your tools. The domain is required for OAuth token endpoints to work properly.
@@ -508,7 +502,7 @@ Create a script called 09_create_gateway_role.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that sets up the gateway's permissions.
@@ -563,7 +557,7 @@ Create a script called 10_create_lambda.py that creates a Lambda function:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that deploys a Lambda function with realistic sample orders.
@@ -615,7 +609,7 @@ Create a script called 11_create_gateway.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that sets up your gateway.
@@ -668,7 +662,7 @@ Create a script called 12_add_lambda_to_gateway.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that connects your Lambda to the gateway.
@@ -720,7 +714,7 @@ Create a script called 13_list_gateway_targets.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script to verify your gateway configuration.
@@ -778,7 +772,7 @@ Create the complete returns agent with memory and gateway:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro generates your production-ready agent with all features - original tools, memory, and gateway.
@@ -812,7 +806,7 @@ Create a test script called 15_test_full_agent.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a comprehensive test that shows all three capabilities working together.
@@ -893,7 +887,7 @@ Create a script called 16_create_runtime_role.py that creates an IAM role for ru
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that sets up runtime permissions.
@@ -952,7 +946,7 @@ Create the runtime-ready version of my agent:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro generates a production-optimized agent with all original tools plus memory and gateway.
@@ -985,7 +979,7 @@ Create a requirements.txt file for my agent with these packages:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates the dependencies file that tells AWS which Python packages to install.
@@ -1021,7 +1015,7 @@ Create a script called 19_deploy_agent.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that configures and deploys your agent to AWS in one step.
@@ -1079,7 +1073,7 @@ Create a script called 20_check_status.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script to monitor your deployment.
@@ -1134,7 +1128,7 @@ Create a script called 21_invoke_agent.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script to test your live production agent with a realistic customer query.
@@ -1206,7 +1200,7 @@ Create a script called 22_get_dashboard.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that gives you the dashboard URL.
@@ -1258,7 +1252,7 @@ Create a script called 23_get_logs_info.py that:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script that gives you the log group information and commands to view logs.
@@ -1323,7 +1317,7 @@ Create a script called 24_cleanup_aws.py that safely deletes all the AWS resourc
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a comprehensive cleanup script that removes everything in the proper order.
@@ -1399,7 +1393,7 @@ Create a script called 25_cleanup_files.py that deletes:
 1. Identify task type and determine which MCP tool to use (or boto3 if Type 2)
 2. Call MCP tool FIRST - extract and save the generated code
 3. Validate APIs: Check method signatures using help() before using any boto3/library APIs
-4. If MCP fails, STOP and ask user for permission - do NOT create code manually
+4. If MCP fails, STOP and ask user - do NOT create code manually
 ```
 
 **What happens**: Kiro creates a script to clean up your workspace.
