@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "aws-bedrock-agentcore": {
-      "command": "/usr/bin/python3",
-      "args": ["/home/workshop/Project/agentcore-mcp-server/server.py"],
+      "command": "python3",
+      "args": ["agentcore-mcp-server/server.py"],
       "env": {
         "PYTHONUNBUFFERED": "1",
-        "AWS_PROFILE": "kiro-temp-agentcore"
+        "AWS_PROFILE": "workshop-profile"
       },
       "disabled": false,
       "autoApprove": []
