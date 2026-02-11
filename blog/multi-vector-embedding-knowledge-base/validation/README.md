@@ -286,11 +286,17 @@ python scripts/test_sync_lambda.py [--function-name FUNCTION_NAME] [--s3-prefix 
 
 ### `scripts/test_vector_search.py`
 
-**Purpose**: Test vector search with different search modes
+**Purpose**: Test vector search with different search modes and optional LLM-as-a-judge evaluation
+
+**New Feature**: LLM-as-a-Judge Scoring using Claude 4.5 Sonnet to evaluate search result relevance
 
 **Usage**:
 ```bash
+# Basic search without judging
 python scripts/test_vector_search.py --search-type TYPE --query "search query" [OPTIONS]
+
+# Search with LLM-as-a-judge evaluation
+python scripts/test_vector_search.py --search-type TYPE --query "search query" --judge [OPTIONS]
 ```
 
 **Search Types**:
@@ -303,6 +309,8 @@ python scripts/test_vector_search.py --search-type TYPE --query "search query" [
 - `--query`: Search query text
 - `--k`: Number of results to return (default: 5)
 - `--region`: AWS region (default: us-west-2)
+- `--judge`: Enable LLM-as-a-judge evaluation
+- `--judge-model`: Bedrock model ID for judging (default: us.anthropic.claude-sonnet-4-5-20250929-v1:0)
 
 **Filter and Search Options**:
 - `--filter-type`: Field to filter by (category or industry)
@@ -312,6 +320,77 @@ python scripts/test_vector_search.py --search-type TYPE --query "search query" [
 - `--metadata-query`: Metadata search query
 - `--content-weight`: Weight for content similarity (default: 0.7)
 - `--metadata-weight`: Weight for metadata similarity (default: 0.3)
+
+**LLM-as-a-Judge Evaluation**:
+
+When `--judge` is enabled, the script uses Claude 4.5 Sonnet to evaluate each search result on:
+- **Content Relevance** (0-10): Does the document content directly address the query?
+- **Semantic Match** (0-10): Are concepts and terminology aligned?
+- **Metadata Alignment** (0-10): Do category/industry tags match query intent?
+- **Completeness** (0-10): Does it provide comprehensive information?
+- **Specificity** (0-10): Is the information specific and actionable?
+
+**Aggregate Metrics Provided**:
+- Mean LLM relevance score across all results
+- Mean vector similarity score
+- Score correlation (how well vector similarity predicts relevance)
+- Relevance distribution (highly/moderately/low relevant counts)
+- Standard deviation of relevance scores
+
+**Example with LLM Judging**:
+```bash
+# Evaluate content similarity search
+python scripts/test_vector_search.py \
+  --search-type content_similarity \
+  --query "machine learning on AWS" \
+  --k 5 \
+  --judge
+
+# Evaluate hybrid search with custom weights
+python scripts/test_vector_search.py \
+  --search-type hybrid_similarity \
+  --query "serverless AI applications" \
+  --metadata-query "cloud computing AWS" \
+  --content-weight 0.6 \
+  --metadata-weight 0.4 \
+  --k 3 \
+  --judge
+```
+
+**Output with LLM Judging**:
+```
+🤖 LLM Judge Evaluation:
+  Overall Relevance: 0.850 (85.0%)
+  Detailed Scores:
+    • Content Relevance: 9/10
+    • Semantic Match: 8/10
+    • Metadata Alignment: 9/10
+    • Completeness: 8/10
+    • Specificity: 8/10
+  Strengths:
+    ✓ Directly addresses machine learning on AWS
+    ✓ Provides specific service examples
+  Weaknesses:
+    ✗ Could include more implementation details
+  
+  Explanation: The document provides highly relevant information about AWS machine learning services with specific examples and use cases.
+
+📈 AGGREGATE EVALUATION METRICS
+Mean LLM Relevance Score: 0.782
+Mean Vector Similarity Score: 0.845
+Score Correlation: 0.923
+Relevance Distribution:
+  🟢 Highly Relevant (≥0.8): 3
+  🟡 Moderately Relevant (0.5-0.8): 2
+  🔴 Low Relevance (<0.5): 0
+```
+
+**Benefits of LLM-as-a-Judge**:
+- Objective evaluation of search quality beyond vector similarity
+- Identifies strengths and weaknesses of each result
+- Helps tune search parameters and weights
+- Validates that high similarity scores correlate with actual relevance
+- Provides actionable feedback for improving the knowledge base
 
 ### `scripts/run_search_examples.sh`
 
