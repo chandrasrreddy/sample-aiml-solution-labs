@@ -1,4 +1,4 @@
-# Aurora Vector KB - Testing and Validation Guide
+# Multi-vector Embedding Vector KB - Testing and Validation Guide
 
 This directory contains tools and scripts for testing the Aurora Vector Knowledge Base system. You can collect sample documents from AWS blogs, upload them to S3, and test the vector search capabilities.
 

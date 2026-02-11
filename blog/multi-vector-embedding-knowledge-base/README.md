@@ -1,6 +1,6 @@
-# Aurora Vector Knowledge Base
+# Enhancing Knowledge Bases with Multi-Vector Architecture
 
-A scalable vector knowledge base system built on Amazon RDS Aurora PostgreSQL with pgvector extension, featuring multi-embedding support, automated document ingestion, and secure retrieval through Amazon Bedrock AgentCore Gateway.
+A scalable vector knowledge base system built on Amazon RDS Aurora PostgreSQL with pgvector extension, featuring multi-vector embedding architecture for improved semantic search across both document content and metadata attributes.
 
 ## 🤖 Built with Kiro AI
 
