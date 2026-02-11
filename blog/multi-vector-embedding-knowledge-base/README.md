@@ -196,7 +196,7 @@ After deployment, the system provides:
 
 ## Testing
 
-For comprehensive testing instructions, validation scripts, and sample data, see **[📋 Testing Guide](/validation/README.md)**.
+For comprehensive testing instructions, validation scripts, and sample data, see **[📋 Testing Guide](./validation/README.md)**.
 
 The validation directory includes:
 - **Test Scripts**: Automated testing for all Lambda functions
