@@ -34,7 +34,10 @@ Explanations are embedded directly in function return values via `result["explan
 ```python
 import sys, os
 sys.argv = ['bedrock_pricing.py']
-exec(open(os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")).read())
+_p = os.path.join(os.getcwd(), "skills/bedrock-pricing/scripts/bedrock_pricing.py")
+if not os.path.exists(_p):
+    _p = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
+exec(open(_p).read())
 ```
 
 ## Workflow

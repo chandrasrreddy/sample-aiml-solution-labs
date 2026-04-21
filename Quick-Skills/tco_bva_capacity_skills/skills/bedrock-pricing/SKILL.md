@@ -34,7 +34,9 @@ tools: [run_python, file_read]
 
 ## Overview
 
-Queries local cached pricing JSON files for Bedrock foundation model per-unit prices. Supports Standard/Priority/Flex tiers, Global/Regional variants, batch, reserved, and prompt caching. Part of a 4-skill family: `bedrock-pricing` (this), `agentcore-pricing`, `bedrock-capacity`, `agent-business-value`.
+Queries local cached pricing JSON files for Bedrock foundation model per-unit prices. Supports Standard/Priority/Flex tiers, Global/Regional variants, batch, reserved, and prompt caching. Part of a 5-skill family: `bedrock-pricing` (this), `agentcore-pricing`, `bedrock-capacity`, `agent-business-value`, `bedrock-tier-advisor`.
+
+**When the user hasn't specified a tier or variant**, load `bedrock-tier-advisor` for guidance on which tier and variant to recommend based on their workload.
 
 ## ⚠️ CALCULATION RULE
 
@@ -66,17 +68,26 @@ Every cost function returns `result["explanation"]` — a structured dict with s
 | `calculate_agentcore_cost()` | `session_profile`, `runtime`, `gateway`, `memory`, `grand_total`, `cost_composition` |
 | `calculate_evaluation_cost()` | `sampling`, `trace_size`, `builtin_evaluators`, `custom_llm_evaluators`, `custom_code_evaluators`, `grand_total` |
 | `calculate_business_value()` | `dim1_time_savings`, `dim2_churn_reduction` (conditional), `dim3_sales_increase` (conditional), `summary` |
-| `check_capacity_fit()` | `rpm_calculation`, `tpm_calculation`, `tier_comparison` |
+| `check_capacity_fit()` | `rpm_calculation`, `tpm_calculation`, `quota_comparison` |
 
 To render: iterate over the dict keys, format as markdown headers + bullet lists. Values are pre-formatted strings ready for display.
 
 ## Workflow
 
-1. **Load inventory cache** (Step 1)
-2. **Look up prices** → `query_model_pricing()` + `extract_bedrock_model_prices()`
-3. **Detect caching support** → check for cache-read/cache-write entries in results
-4. **Calculate cost** → `calculate_agent_cost_with_incremental_caching()` — pass prices + workload params
-5. **Present results** → show assumptions, breakdown, no-cache baseline, savings %
+1. **Gather region and model** (Step 0 — before any query)
+2. **Load inventory cache** (Step 1)
+3. **Look up prices** → `query_model_pricing()` + `extract_bedrock_model_prices()`
+4. **Detect caching support** → check for cache-read/cache-write entries in results
+5. **Calculate cost** → `calculate_agent_cost_with_incremental_caching()` — pass prices + workload params
+6. **Present results** → show assumptions, breakdown, no-cache baseline, savings %
+
+### Step 0: Gather Region and Model
+
+**Region — HARD GATE:** Do NOT call `query_model_pricing()` without a region. If the user hasn't specified one, ask before proceeding.
+
+**Model — Depends on intent:**
+- If the user wants a **cost estimate**, a specific model is required — ask.
+- If the user wants to **compare models**, query the cache for the most recent models from the Anthropic and Alibaba (Qwen) families in the user's region. Present the top 3–4 options and ask the user to pick one or suggest a different model. Never query all models unfiltered.
 
 ## Cache Files
 
@@ -99,7 +110,10 @@ Always runs first:
 ```python
 import sys, os
 sys.argv = ['bedrock_pricing.py']
-exec(open(os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")).read())
+_p = os.path.join(os.getcwd(), "skills/bedrock-pricing/scripts/bedrock_pricing.py")
+if not os.path.exists(_p):
+    _p = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
+exec(open(_p).read())
 # Functions available: query_model_pricing(), query_agentcore_pricing(),
 # calculate_agent_cost_with_incremental_caching(), calculate_agentcore_cost(),
 # calculate_business_value(), calculate_evaluation_cost(), check_capacity_fit()
@@ -129,7 +143,7 @@ all_prices = extract_bedrock_model_prices(results, all_tiers=True)
 # }
 ```
 
-Present the tier summary as a markdown table. Default to **Standard Global** for cost calculations, but let the user pick a different tier. Not all models have all tiers — only show what's available.
+Present the tier summary as a markdown table. Load `bedrock-tier-advisor` to determine the best default tier for the user's workload. Not all models have all tiers — only show what's available.
 
 ### Specific Tier or Variant
 
@@ -218,6 +232,10 @@ All outputs should include:
 - Savings % vs no-caching baseline
 
 ## Lessons Learned
+
+### Assumptions
+- Caching of prior question-response history across questions is not modeled (future consideration).
+- Cache TTL is assumed infinite within a session (no eviction modeled).
 
 ### Do
 - Always run cache inventory first

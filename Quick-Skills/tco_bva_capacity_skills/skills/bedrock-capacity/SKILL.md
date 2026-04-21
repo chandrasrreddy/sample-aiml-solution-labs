@@ -42,7 +42,10 @@ Explanations are embedded directly in function return values via `result["explan
 ```python
 import sys, os
 sys.argv = ['bedrock_pricing.py']
-exec(open(os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")).read())
+_p = os.path.join(os.getcwd(), "skills/bedrock-pricing/scripts/bedrock_pricing.py")
+if not os.path.exists(_p):
+    _p = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
+exec(open(_p).read())
 ```
 
 ## Cache File
@@ -68,30 +71,30 @@ actual_tpm_limit = tpm_quotas[0]["value"] if tpm_quotas else None
 
 If `rpm_quotas` is empty → cache is missing. Tell user to run `--refresh`. Do NOT guess.
 
-## Step 2: Compute Required RPM/TPM
+## Step 2: Compute Required RPM/TPM and Compare
+
+`check_capacity_fit()` requires real quota limits — pass them directly from Step 1.
+
+**RECOMMENDED:** Pass `token_profile=model_result['assumptions']` to ensure the capacity check uses the exact same token parameters as the cost estimate. This prevents mismatches between the cost calculation and capacity check.
 
 ```python
-result = check_capacity_fit(
-    questions_per_month=1_000_000,
-    sessions_per_month=200_000,
-    tools_invoked=10,
-    output_burndown_rate=5,      # Claude 3.7 and all later Claude models (4.x, Opus, Sonnet, Haiku) = 5×
-    max_tokens_setting=4096,
-    peak_to_avg_ratio=3.0,       # peak = 3× average during active hours
-    active_hours_per_day=12,
-    active_days_per_month=22,
-)
-```
-
-## Step 3: Compare
-
-```python
-if actual_rpm_limit:
-    rpm_ok = result["peak_rpm"] <= actual_rpm_limit
-    tpm_ok = result["effective_peak_tpm"] <= actual_tpm_limit
-else:
-    # Cache missing — cannot compare. Tell user to refresh.
+if actual_rpm_limit is None or actual_tpm_limit is None:
     print("⚠️ Quota cache missing. Run --refresh to get actual per-model limits.")
+else:
+    result = check_capacity_fit(
+        questions_per_month=1_000_000,
+        sessions_per_month=200_000,
+        rpm_limit=actual_rpm_limit,       # REQUIRED — from query_quotas()
+        tpm_limit=actual_tpm_limit,       # REQUIRED — from query_quotas()
+        output_burndown_rate=5,      # Claude 3.7 and all later Claude models (4.x, Opus, Sonnet, Haiku) = 5×
+        max_tokens_setting=4096,
+        peak_to_avg_ratio=3.0,       # peak = 3× average during active hours
+        active_hours_per_day=12,
+        active_days_per_month=22,
+        token_profile=model_result['assumptions'],  # reuses exact token params from cost estimate
+    )
+    # result["fits"] is True/False
+    # result["rpm_utilization_pct"] and result["tpm_utilization_pct"] show how close to limits
 ```
 
 ## Key Concepts
