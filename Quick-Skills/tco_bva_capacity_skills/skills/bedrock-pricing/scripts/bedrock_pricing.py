@@ -428,7 +428,9 @@ def calculate_agent_cost_with_incremental_caching(
         cache_read_price (float | None): Cache read price, $/M. None → 0.0.
         cache_write_price (float | None): Cache write price, $/M. None → 0.0.
         sessions_per_month (int): Total sessions per month.
-        questions_per_session (float): Questions/session (default 5).
+        questions_per_session (float): Questions/session (default 5). Fractional
+            values are supported and represent a weighted average across sessions
+            with varying question counts.
         input_tokens (int): User question tokens (default 100).
         output_tokens (int): Final turn output tokens (default 100).
         system_prompt_tokens (int): System prompt tokens (default 1000).
@@ -478,24 +480,36 @@ def calculate_agent_cost_with_incremental_caching(
     base_prompt = cacheable_base + input_tokens + rag_tokens  # 8,100
 
     # --- First question in session ---
-    # Turn 0: all new → cache write (will be re-read on turn 1)
-    # Turns 1..N-1: prefix = cache read, delta = cache write (will be re-read)
-    # Turn N (last): prefix = cache read, delta = regular input (not re-read)
-    q1_cache_write = base_prompt + (N - 1) * delta
-    q1_cache_read = 0
-    for k in range(1, turns_per_question):
-        q1_cache_read += base_prompt + (k - 1) * delta
-    q1_regular = delta  # last turn only
+    if N == 0:
+        # Single turn, no tools: entire base_prompt is cache_write (for cross-Q caching)
+        q1_cache_write = base_prompt
+        q1_cache_read = 0
+        q1_regular = 0
+    else:
+        # Turn 0: all new → cache write (will be re-read on turn 1)
+        # Turns 1..N-1: prefix = cache read, delta = cache write (will be re-read)
+        # Turn N (last): prefix = cache read, delta = regular input (not re-read)
+        q1_cache_write = base_prompt + (N - 1) * delta
+        q1_cache_read = 0
+        for k in range(1, turns_per_question):
+            q1_cache_read += base_prompt + (k - 1) * delta
+        q1_regular = delta  # last turn only
 
     # --- Subsequent questions (2nd..last) in session ---
-    # Turn 0: system+tools = cache read (from prior Q), user+RAG = cache write (new)
-    # Turns 1..N-1: full prefix = cache read, delta = cache write
-    # Turn N (last): full prefix = cache read, delta = regular input
-    q2_cache_write = (input_tokens + rag_tokens) + (N - 1) * delta
-    q2_cache_read = cacheable_base  # turn 0: system+tools cached
-    for k in range(1, turns_per_question):
-        q2_cache_read += base_prompt + (k - 1) * delta
-    q2_regular = delta
+    if N == 0:
+        # Single turn, no tools: system+tools cached from prior Q, user+RAG is new
+        q2_cache_write = input_tokens + rag_tokens
+        q2_cache_read = cacheable_base
+        q2_regular = 0
+    else:
+        # Turn 0: system+tools = cache read (from prior Q), user+RAG = cache write (new)
+        # Turns 1..N-1: full prefix = cache read, delta = cache write
+        # Turn N (last): full prefix = cache read, delta = regular input
+        q2_cache_write = (input_tokens + rag_tokens) + (N - 1) * delta
+        q2_cache_read = cacheable_base  # turn 0: system+tools cached
+        for k in range(1, turns_per_question):
+            q2_cache_read += base_prompt + (k - 1) * delta
+        q2_regular = delta
 
     # --- Per session ---
     n_subsequent = questions_per_session - 1
@@ -609,7 +623,11 @@ def calculate_agent_cost_with_incremental_caching(
             "tool_desc_tokens": tool_desc_tokens,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "rag_chunks": rag_chunks,
+            "rag_tokens_per_chunk": rag_tokens_per_chunk,
             "rag_tokens": rag_tokens,
+            "tool_call_tokens": tool_call_tokens,
+            "tool_result_tokens": tool_result_tokens,
             "delta_per_tool_turn": delta,
             "base_prompt": base_prompt,
             "cacheable_base": cacheable_base,
@@ -737,6 +755,14 @@ def refresh_cache(output_dir):
             json.dump(data, f)
         print(f"  Saved {len(all_items)} entries to {filepath}", file=sys.stderr)
     print("\nCache refresh complete!", file=sys.stderr)
+    print("\n💡 Tier advisory may be outdated. To refresh, open Quick Desktop and ask:", file=sys.stderr)
+    print("   \"Read the current guidance file at ~/.quickwork/skills/bedrock-tier-advisor/bedrock-tier-guidance.md.", file=sys.stderr)
+    print("   Query AWS documentation using the aws-documentation-mcp-server to extract the latest tier", file=sys.stderr)
+    print("   and variant guidance from these pages:", file=sys.stderr)
+    print("   - https://docs.aws.amazon.com/bedrock/latest/userguide/service-tiers-inference.html", file=sys.stderr)
+    print("   - https://docs.aws.amazon.com/bedrock/latest/userguide/capacity-limits-cost-optimization.html", file=sys.stderr)
+    print("   - https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html", file=sys.stderr)
+    print("   Update bedrock-tier-guidance.md with any changes. Preserve the file structure and source citations.\"", file=sys.stderr)
 
 
 def refresh_quotas(output_dir, regions=None):
@@ -1104,17 +1130,11 @@ def calculate_evaluation_cost(
     }
 
 
-# ── Tier RPM/TPM ranges (approximate, from AWS docs) ──
-TIER_LIMITS = {
-    "Flex":     {"rpm_low": 10,  "rpm_high": 100,  "tpm_low": 5_000,   "tpm_high": 50_000},
-    "Standard": {"rpm_low": 100, "rpm_high": 500,  "tpm_low": 50_000,  "tpm_high": 150_000},
-    "Priority": {"rpm_low": 500, "rpm_high": 1000, "tpm_low": 150_000, "tpm_high": 300_000},
-}
-
-
 def check_capacity_fit(
     questions_per_month,
     sessions_per_month,
+    rpm_limit,
+    tpm_limit,
     # Traffic profile
     peak_to_avg_ratio=3.0,             # peak RPM = avg RPM × this factor
     active_hours_per_day=12,           # hours with traffic (rest = 0)
@@ -1133,32 +1153,51 @@ def check_capacity_fit(
     max_tokens_setting=4096,           # what max_tokens is set to in the API call
     # Model characteristics
     output_burndown_rate=1,            # 5 for Claude 3.7+, 1 for all others
-    # Tier to check against
-    tier="Standard",
-    tier_limits=None,                  # Optional: override default TIER_LIMITS dict
+    # Optional: pass token profile from calculate_agent_cost_with_incremental_caching result
+    token_profile=None,                # If provided, overrides individual token params above
 ):
-    """Check if a workload fits within a Bedrock service tier's RPM/TPM limits.
+    """Check if a workload fits within Bedrock RPM/TPM quota limits.
+
+    IMPORTANT: rpm_limit and tpm_limit are REQUIRED. Get them from query_quotas()
+    for the specific model and region. Do NOT use hardcoded approximations.
+
+    RECOMMENDED: Pass token_profile=model_result['assumptions'] from
+    calculate_agent_cost_with_incremental_caching() to ensure the capacity check
+    uses the exact same token parameters as the cost estimate.
 
     Args:
         questions_per_month, sessions_per_month (int): Workload volume.
+        rpm_limit (int): Actual RPM quota limit from query_quotas().
+        tpm_limit (int): Actual TPM quota limit from query_quotas().
         peak_to_avg_ratio (float): Peak multiplier (default 3.0).
         active_hours_per_day (int): Traffic hours (default 12).
         active_days_per_month (int): Business days (default 22).
         tools_invoked, input/output_tokens, system_prompt_tokens,
             tool_desc_tokens, rag_chunks, rag_tokens_per_chunk,
-            tool_call/result_tokens: Token profile.
+            tool_call/result_tokens: Token profile (overridden by token_profile if provided).
         max_tokens_setting (int): API max_tokens (default 4096).
         output_burndown_rate (int): Output TPM multiplier. 5 for Claude, 1 others.
-        tier (str): "Flex", "Standard", or "Priority".
-        tier_limits (dict | None): Override TIER_LIMITS. Each tier maps to
-            {rpm_low, rpm_high, tpm_low, tpm_high}.
+        token_profile (dict | None): If provided, extracts token params from this dict
+            (e.g., model_result['assumptions']). Overrides individual token params.
 
     Returns:
         dict: avg/peak_rpm, avg/peak/effective_peak_tpm (float),
         fits (bool), rpm/tpm_fits (bool), rpm/tpm_utilization_pct (float),
         recommendations (list[str]), optimization_checklist (list[dict]),
-        explanation (dict): rpm_calculation, tpm_calculation, tier_comparison.
+        explanation (dict): rpm_calculation, tpm_calculation, quota_comparison.
     """
+    # If token_profile provided, extract values from it (overrides individual params)
+    if token_profile is not None:
+        tools_invoked = token_profile.get("tools_invoked", tools_invoked)
+        input_tokens = token_profile.get("input_tokens", input_tokens)
+        output_tokens = token_profile.get("output_tokens", output_tokens)
+        system_prompt_tokens = token_profile.get("system_prompt_tokens", system_prompt_tokens)
+        tool_desc_tokens = token_profile.get("tool_desc_tokens", tool_desc_tokens)
+        rag_chunks = token_profile.get("rag_chunks", rag_chunks)
+        rag_tokens_per_chunk = token_profile.get("rag_tokens_per_chunk", rag_tokens_per_chunk)
+        tool_call_tokens = token_profile.get("tool_call_tokens", tool_call_tokens)
+        tool_result_tokens = token_profile.get("tool_result_tokens", tool_result_tokens)
+        questions_per_session = token_profile.get("questions_per_session", questions_per_session)
     # Input validation
     if questions_per_month <= 0:
         raise ValueError(f"questions_per_month must be > 0, got {questions_per_month}")
@@ -1166,6 +1205,10 @@ def check_capacity_fit(
         raise ValueError(f"active_hours_per_day must be > 0, got {active_hours_per_day}")
     if active_days_per_month <= 0:
         raise ValueError(f"active_days_per_month must be > 0, got {active_days_per_month}")
+    if rpm_limit <= 0:
+        raise ValueError(f"rpm_limit must be > 0, got {rpm_limit}")
+    if tpm_limit <= 0:
+        raise ValueError(f"tpm_limit must be > 0, got {tpm_limit}")
 
     N = tools_invoked
 
@@ -1179,13 +1222,13 @@ def check_capacity_fit(
     # ── Compute TPM ──
     base_context = input_tokens + system_prompt_tokens + tool_desc_tokens + rag_chunks * rag_tokens_per_chunk
     # Average input tokens across all N+1 turns of a question:
-    # Sum = (N+1) × base_context + 300 × N × (N+1)
-    # Per-turn average = base_context + 300×N × (N/2) ≈ base_context + 150×N
+    # Sum = (N+1) × base_context + delta × N × (N+1) / 2
+    # Per-turn average = base_context + delta × N / 2
     delta = (tool_call_tokens + tool_result_tokens)
     avg_input_per_turn = base_context + (delta / 2) * N
-    # Average output per turn: tool call turns produce ~150 tokens (JSON),
+    # Average output per turn: tool call turns produce tool_call_tokens (JSON),
     # final turn produces the full output_tokens. Weighted average across N+1 turns.
-    avg_output_per_turn = (N * 150 + output_tokens) // (N + 1) if N > 0 else output_tokens
+    avg_output_per_turn = (N * tool_call_tokens + output_tokens) // (N + 1) if N > 0 else output_tokens
 
     # TPM at average load
     avg_tpm_input = avg_rpm * avg_input_per_turn
@@ -1197,32 +1240,30 @@ def check_capacity_fit(
 
     # max_tokens overhead: at request start, max_tokens is reserved
     # This inflates effective TPM by (max_tokens - actual_output) per request
-    max_tokens_overhead_per_req = max_tokens_setting - avg_output_per_turn
+    max_tokens_overhead_per_req = max(0, max_tokens_setting - avg_output_per_turn)
     effective_peak_tpm = peak_tpm + (peak_rpm * max_tokens_overhead_per_req)
 
-    # ── Compare against tier ──
-    _tier_limits = tier_limits or TIER_LIMITS
-    limits = _tier_limits.get(tier, TIER_LIMITS["Standard"])
-    rpm_fits = peak_rpm <= limits["rpm_high"]
-    tpm_fits = peak_tpm <= limits["tpm_high"]
-    effective_tpm_fits = effective_peak_tpm <= limits["tpm_high"]
+    # ── Compare against quota limits ──
+    rpm_fits = peak_rpm <= rpm_limit
+    tpm_fits = peak_tpm <= tpm_limit
+    effective_tpm_fits = effective_peak_tpm <= tpm_limit
     fits = rpm_fits and effective_tpm_fits
 
-    rpm_util = (peak_rpm / limits["rpm_high"]) * 100
-    tpm_util = (effective_peak_tpm / limits["tpm_high"]) * 100
+    rpm_util = (peak_rpm / rpm_limit) * 100
+    tpm_util = (effective_peak_tpm / tpm_limit) * 100
 
     # ── Recommendations ──
     recommendations = []
     if not rpm_fits:
-        recommendations.append(f"Peak RPM ({peak_rpm:,.0f}) exceeds {tier} tier max ({limits['rpm_high']:,}). Consider Priority tier or quota increase.")
+        recommendations.append(f"Peak RPM ({peak_rpm:,.0f}) exceeds quota limit ({rpm_limit:,}). Consider a quota increase or cross-region inference.")
     if not effective_tpm_fits and tpm_fits:
-        recommendations.append(f"Peak TPM fits ({peak_tpm:,.0f}) but effective TPM with max_tokens overhead ({effective_peak_tpm:,.0f}) exceeds limit. Reduce max_tokens from {max_tokens_setting:,} to ~{avg_output_per_turn * 2}.")
+        recommendations.append(f"Peak TPM fits ({peak_tpm:,.0f}) but effective TPM with max_tokens overhead ({effective_peak_tpm:,.0f}) exceeds limit ({tpm_limit:,}). Reduce max_tokens from {max_tokens_setting:,} to ~{avg_output_per_turn * 2}.")
     if not tpm_fits:
-        recommendations.append(f"Peak TPM ({peak_tpm:,.0f}) exceeds {tier} tier max ({limits['tpm_high']:,}). Consider Priority tier or quota increase.")
+        recommendations.append(f"Peak TPM ({peak_tpm:,.0f}) exceeds quota limit ({tpm_limit:,}). Consider a quota increase or cross-region inference.")
     if output_burndown_rate > 1:
         recommendations.append(f"Output burndown rate is {output_burndown_rate}× — each output token consumes {output_burndown_rate} TPM quota. Reducing output length has {output_burndown_rate}× impact.")
     if fits:
-        recommendations.append(f"Workload fits within {tier} tier. RPM utilization: {rpm_util:.0f}%, TPM utilization: {tpm_util:.0f}%.")
+        recommendations.append(f"Workload fits within quota limits. RPM utilization: {rpm_util:.0f}%, TPM utilization: {tpm_util:.0f}%.")
 
     # ── Optimization checklist (always returned) ──
     optimization_checklist = [
@@ -1247,16 +1288,15 @@ def check_capacity_fit(
         },
         "tpm_calculation": {
             "base_context": f"{_fmt(input_tokens)} (user) + {_fmt(system_prompt_tokens)} (sys) + {_fmt(tool_desc_tokens)} (tools) + {_fmt(rag_chunks * rag_tokens_per_chunk)} (RAG) = {_fmt(base_context)}",
-            "avg_input_per_turn": f"{_fmt(base_context)} + 150 × {N} = {_fmt(avg_input_per_turn)} tokens",
+            "avg_input_per_turn": f"{_fmt(base_context)} + ({_fmt(delta)}/2) × {N} = {_fmt(avg_input_per_turn)} tokens",
             "avg_tpm": f"{avg_rpm:.1f} RPM × ({_fmt(avg_input_per_turn)} in + {_fmt(avg_output_per_turn)}{'×' + str(output_burndown_rate) if output_burndown_rate > 1 else ''} out) = {_fmt(avg_tpm)} TPM",
             "peak_tpm": f"{_fmt(avg_tpm)} × {peak_to_avg_ratio}× = {_fmt(peak_tpm)} TPM",
             "max_tokens_overhead": f"max_tokens={_fmt(max_tokens_setting)} − actual_output={_fmt(avg_output_per_turn)} = {_fmt(max_tokens_overhead_per_req)} reserved/req",
             "effective_peak_tpm": f"{_fmt(peak_tpm)} + ({peak_rpm:.0f} RPM × {_fmt(max_tokens_overhead_per_req)}) = {_fmt(effective_peak_tpm)} TPM",
         },
-        "tier_comparison": {
-            "tier": tier,
-            "rpm_limit": f"{_fmt(limits['rpm_high'])} (peak: {peak_rpm:.0f} → {'✅ fits' if rpm_fits else '❌ exceeds'})",
-            "tpm_limit": f"{_fmt(limits['tpm_high'])} (effective peak: {_fmt(effective_peak_tpm)} → {'✅ fits' if effective_tpm_fits else '❌ exceeds'})",
+        "quota_comparison": {
+            "rpm_limit": f"{_fmt(rpm_limit)} (peak: {peak_rpm:.0f} → {'✅ fits' if rpm_fits else '❌ exceeds'})",
+            "tpm_limit": f"{_fmt(tpm_limit)} (effective peak: {_fmt(effective_peak_tpm)} → {'✅ fits' if effective_tpm_fits else '❌ exceeds'})",
             "rpm_utilization": f"{rpm_util:.0f}%",
             "tpm_utilization": f"{tpm_util:.0f}%",
         },
@@ -1269,8 +1309,8 @@ def check_capacity_fit(
         "peak_tpm": peak_tpm,
         "effective_peak_tpm": effective_peak_tpm,
         "max_tokens_overhead_per_req": max_tokens_overhead_per_req,
-        "tier": tier,
-        "tier_limits": limits,
+        "rpm_limit": rpm_limit,
+        "tpm_limit": tpm_limit,
         "rpm_utilization_pct": rpm_util,
         "tpm_utilization_pct": tpm_util,
         "fits": fits,
@@ -1569,6 +1609,9 @@ def calculate_business_value(
             dim3_sales_increase (conditional), summary.
     """
     time_saved_min = time_without_ai_min - time_with_ai_min
+    if time_saved_min < 0:
+        import warnings
+        warnings.warn("Negative time savings: AI takes longer than manual (rare scenario).")
 
     # --- Dimension 1: Time Savings (all 3 tiers) ---
     dim1_cost_savings = {}
