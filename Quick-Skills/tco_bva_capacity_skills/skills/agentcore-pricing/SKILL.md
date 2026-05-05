@@ -1,87 +1,78 @@
 ---
 name: agentcore-pricing
-display_name: AgentCore & Agent Pricing
-description: "Get pricing for Amazon Bedrock AgentCore components (Runtime, Gateway, Memory, BrowserTool, CodeInterpreter, Evaluations) and combined agent cost estimates. Activate when the user asks about AgentCore pricing, agent costs, or mentions 'agent' in a pricing context. Also handles multi-agent (parent + sub-agent) scenarios. For model-only pricing, load bedrock-pricing. For RPM/TPM capacity, load bedrock-capacity."
-icon: "🤖"
-trigger: agentcore pricing
-inputs:
-  - name: region
-    description: "AWS region code (e.g. us-east-1)."
-    type: string
-    required: false
-  - name: model
-    description: "Model name for the agent (e.g. 'Claude Sonnet 4.6'). Fuzzy matched."
-    type: string
-    required: false
-tools: [run_python, file_read]
+description: >
+  Use when estimating Amazon Bedrock AgentCore infrastructure costs including Runtime,
+  Gateway, Memory, BrowserTool, CodeInterpreter, or Evaluations. Handles combined
+  agent cost estimates (model inference + AgentCore infrastructure) and multi-agent
+  architectures (parent + sub-agents).
+  Do NOT use for model-only pricing (load bedrock-pricing),
+  RPM/TPM capacity planning (load bedrock-capacity), or business value ROI (load agent-business-value).
 ---
 
-## CRITICAL RULE — NO TRAINING DATA
+# AgentCore Pricing
 
-**NEVER use your training data for prices.** ALL must come from cached JSON files. If missing, tell user to refresh: `python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh`
+## Critical Rules
 
-## Overview
+- **NEVER use training data for prices.** All prices must come from cached JSON files at runtime.
+- **NEVER implement billing formulas manually.** Always use `calculate_agentcore_cost()` and `calculate_evaluation_cost()`.
+- **Only include components explicitly requested.** If user says "run in AC Runtime," add ONLY Runtime — do not auto-add Gateway, Memory, etc.
+- **STM reads are free** — only writes are billed.
+- **vCPU is free during I/O wait** — do not apply I/O wait discount to BrowserTool or CodeInterpreter.
 
-Prices AgentCore components and builds combined agent cost estimates (model + AgentCore). Supports multi-agent architectures. Part of a 4-skill family: `bedrock-pricing`, `agentcore-pricing` (this), `bedrock-capacity`, `agent-business-value`.
+## Prerequisites
 
-## ⚠️ CALCULATION RULE
-
-**ALWAYS use the script functions to produce numbers:**
-- `calculate_agentcore_cost()` — Runtime, Gateway, Memory, BrowserTool, CodeInterpreter
-- `calculate_evaluation_cost()` — Evaluations
-- `calculate_agent_cost_with_incremental_caching()` — Model cost (for combined estimates)
-
-**NEVER implement billing formulas manually.** All functions are fully parameterized.
-
-Explanations are embedded directly in function return values via `result["explanation"]` — no separate skill needed.
+- Cache file `~/bedrock_pricing_agentcore.json` must exist
+- If missing or stale (>7 days), instruct user to refresh:
+  ```bash
+  # If USE_IN_KIRO or USE_IN_CLAUDE_CODE is set:
+  python3 tco_bva_capacity_skills/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh
+  # Otherwise (Quick):
+  python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh
+  ```
 
 ## Workflow
 
-1. **Load inventory cache** → load the bundled script
-2. **Look up prices** → `query_agentcore_pricing()` + `query_model_pricing()`
-3. **Present assumptions** → show all params, ask user to approve
-4. **Calculate** → call the functions
-5. **Present results** → per-component breakdown, monthly/annual totals
-
-### Load Script
+### 1. Load the Pricing Script
 
 ```python
 import sys, os
 sys.argv = ['bedrock_pricing.py']
-_p = os.path.join(os.getcwd(), "skills/bedrock-pricing/scripts/bedrock_pricing.py")
-if not os.path.exists(_p):
-    _p = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
-exec(open(_p).read())
+
+if os.environ.get("USE_IN_KIRO") or os.environ.get("USE_IN_CLAUDE_CODE"):
+    script = "tco_bva_capacity_skills/skills/bedrock-pricing/scripts/bedrock_pricing.py"
+else:
+    script = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
+
+if not os.path.exists(script):
+    raise RuntimeError(
+        f"bedrock_pricing.py not found at: {script}\n"
+        f"If using Kiro/Claude Code, set USE_IN_KIRO=1 or USE_IN_CLAUDE_CODE=1.\n"
+        f"If using Quick, ensure the script is installed at the expected path."
+    )
+
+exec(open(script).read())
 ```
 
-## Cache Files
+### 2. Look Up AgentCore Prices
 
-| Cache File | Contents |
-|-----------|----------|
-| `~/bedrock_pricing_agentcore.json` | Runtime, Gateway, Memory, BrowserTool, CodeInterpreter, Evaluations |
-| `~/bedrock_pricing.json` + `~/bedrock_pricing_3p.json` + `~/bedrock_pricing_service.json` | Model prices (for combined estimates) |
+```python
+home = os.path.expanduser("~")
+ac_prices = query_agentcore_pricing(home, region_filter="us-east-1")
+```
 
-### Cache Key Reference
+- If user needs a combined estimate (model + infrastructure), also call `query_model_pricing()` for the model prices
+- If user does not specify a region, ask which region they want
 
-| Component | Cache Key Pattern |
-|-----------|------------------|
-| Runtime vCPU | `Runtime:Consumption-based:vCPU` → per vCPU-Hour |
-| Runtime Memory | `Runtime:Consumption-based:Memory` → per GB-Hour |
-| Gateway Invocations | `Gateway:Consumption-based:API-Invocations` |
-| Gateway Search | `Gateway:Consumption-based:Search-API` |
-| Gateway Indexing | `Gateway:Consumption-based:Tool-Indexing` |
-| STM | `Memory:Consumption-based:Short-Term-Memory` |
-| LTM Storage | `Memory:Consumption-based:Long-Term-Memory-Storage:Built-in-memory` |
-| LTM Retrieval | `Memory:Consumption-based:Long-Term-Memory-Retrieval` |
-| BrowserTool vCPU | `BrowserTool:Consumption-based:vCPU` |
-| BrowserTool Memory | `BrowserTool:Consumption-based:Memory` |
-| CodeInterpreter vCPU | `CodeInterpreter:Consumption-based:vCPU` |
-| CodeInterpreter Memory | `CodeInterpreter:Consumption-based:Memory` |
-| Evaluations Built-in Input | `Evaluations:Consumption-based:BuiltIn-Input:Tier1` |
-| Evaluations Built-in Output | `Evaluations:Consumption-based:BuiltIn-Output:Tier1` |
-| Evaluations Custom | `Evaluations:Consumption-based:CustomEvaluators:Tier1` |
+### 3. Present Assumptions
 
-## Calculate AgentCore Cost
+Show all parameters and their values. Ask the user to confirm before calculating. Key parameters to surface:
+- Questions per month and per session
+- Tools invoked per question
+- vCPU count and memory allocation
+- I/O wait percentage
+- Which components are included (Runtime, Gateway, Memory, BrowserTool, CodeInterpreter, Evaluations)
+
+### 4. Calculate AgentCore Cost
 
 ```python
 result = calculate_agentcore_cost(
@@ -102,7 +93,7 @@ result = calculate_agentcore_cost(
     # Workload
     questions_per_month=1_000_000,
     questions_per_session=5,
-    tools_invoked=10,
+    tools_invoked=5,
     tools_indexed=50,
     # Runtime
     num_vcpus=2,
@@ -113,7 +104,7 @@ result = calculate_agentcore_cost(
 # Returns: runtime, gateway, memory, browser, code_interpreter, total_monthly, total_annual
 ```
 
-## Calculate Evaluations
+### 5. Calculate Evaluations (if requested)
 
 ```python
 eval_result = calculate_evaluation_cost(
@@ -126,16 +117,39 @@ eval_result = calculate_evaluation_cost(
 )
 ```
 
-## Scoping Rule
+### 6. For Combined Estimates (Model + Infrastructure)
 
-**Only include components explicitly requested.** If user says "run in AC Runtime," add ONLY Runtime — don't auto-add Gateway, Memory, etc.
+- Load `bedrock-pricing` to get model inference costs via `calculate_agent_cost_with_incremental_caching()`
+- Sum model cost + AgentCore cost for the grand total
+- Present per-component breakdown showing where spend goes
+
+### 7. Present Results
+
+1. Show per-component breakdown as a markdown table (Runtime, Gateway, Memory, etc.)
+2. Show monthly and annual totals
+3. Highlight the I/O wait benefit: "vCPU is free during I/O wait — {io_wait_pct}% of runtime is idle"
+4. Offer: *"Want to see the step-by-step breakdown?"*
+
+- If user asks, read `result["explanation"]` (already computed) and format as markdown
+
+## Multi-Agent Architecture
+
+When user describes parent + sub-agents, calculate model inference for **each agent separately**:
+
+| Agent | Default Config |
+|-------|---------------|
+| **Parent (router)** | All questions, no tools, cheap model (Nova Lite), 1 turn/Q |
+| **Sub-agents** | Their fraction of questions, own model/tools/caching profile |
+| **Shared Runtime** | Scale vCPU/memory proportionally (e.g., 3 agents × 2 vCPU = 6 vCPU) |
+
+Present each agent's cost individually, then sum for the architecture total.
 
 ## Defaults
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | Questions/session | 5 | Ask user if not specified |
-| Tools invoked/question | 10 | Ask user if not specified |
+| Tools invoked/question | 5 | Ask user if not specified |
 | Tools indexed | 50 | Flat monthly fee |
 | vCPUs | 2 | Default microVM |
 | Peak memory | 4 GB | Default microVM |
@@ -147,28 +161,48 @@ eval_result = calculate_evaluation_cost(
 | Eval sampling rate | 10% | Main cost lever |
 | Eval built-in evaluators | 3 | Helpfulness, Correctness, Safety |
 
-## Multi-Agent Architecture
+## Cache Key Reference
 
-When user describes parent + sub-agents, calculate model inference for **each agent separately**:
+| Component | Cache Key Pattern |
+|-----------|------------------|
+| Runtime vCPU | `Runtime:Consumption-based:vCPU` → per vCPU-Hour |
+| Runtime Memory | `Runtime:Consumption-based:Memory` → per GB-Hour |
+| Gateway Invocations | `Gateway:Consumption-based:API-Invocations` |
+| Gateway Search | `Gateway:Consumption-based:Search-API` |
+| Gateway Indexing | `Gateway:Consumption-based:Tool-Indexing` |
+| STM | `Memory:Consumption-based:Short-Term-Memory` |
+| LTM Storage | `Memory:Consumption-based:Long-Term-Memory-Storage:Built-in-memory` |
+| LTM Retrieval | `Memory:Consumption-based:Long-Term-Memory-Retrieval` |
+| BrowserTool vCPU | `BrowserTool:Consumption-based:vCPU` |
+| BrowserTool Memory | `BrowserTool:Consumption-based:Memory` |
+| CodeInterpreter vCPU | `CodeInterpreter:Consumption-based:vCPU` |
+| CodeInterpreter Memory | `CodeInterpreter:Consumption-based:Memory` |
+| Evaluations Built-in Input | `Evaluations:Consumption-based:BuiltIn-Input:Tier1` |
+| Evaluations Built-in Output | `Evaluations:Consumption-based:BuiltIn-Output:Tier1` |
+| Evaluations Custom | `Evaluations:Consumption-based:CustomEvaluators:Tier1` |
 
-| Agent | Default Config |
-|-------|---------------|
-| **Parent** | All questions, no tools (pure routing), cheap model (Nova Lite), 1 turn/Q |
-| **Sub-agents** | Their fraction of questions, own model/tools/caching profile |
-| **Shared Runtime** | Scale vCPU/memory proportionally (e.g. 3 agents × 2 vCPU = 6 vCPU) |
+## Explanation Rendering
 
-## Lessons Learned
+`result["explanation"]` contains these sections:
 
-### Do
-- Distinguish questions from sessions — questions are primary input, sessions derived
-- Present assumptions and wait for approval before calculating
-- Show both monthly and annual totals
-- Highlight I/O wait benefit: "vCPU is free during I/O wait"
-- Only include explicitly requested AC components
+| Section | What it shows |
+|---------|---------------|
+| `session_profile` | Session duration and active time |
+| `runtime` | vCPU + memory cost breakdown |
+| `gateway` | Invocations, search, indexing costs |
+| `memory` | STM + LTM costs |
+| `grand_total` | Sum of all components |
+| `cost_composition` | Percentage breakdown by component |
 
-### Don't
-- Don't confuse questions with sessions
-- Don't hardcode prices — always read from cache
-- Don't apply I/O wait discount to BrowserTool or CodeInterpreter
-- Don't charge for STM reads — only writes are billed
-- Don't auto-include components the user didn't ask for
+### Rules for rendering:
+- Default: show summary table only, offer breakdown on demand
+- Always use markdown — never HTML artifacts or `<details>` tags
+- Never re-compute — the explanation dict is already in memory
+
+## Related Skills
+
+| Skill | When to load |
+|-------|-------------|
+| `bedrock-pricing` | Need model inference prices for combined estimates |
+| `bedrock-capacity` | User asks about RPM/TPM limits or provisioned throughput |
+| `agent-business-value` | User wants ROI, productivity gains, or FTE equivalents |
