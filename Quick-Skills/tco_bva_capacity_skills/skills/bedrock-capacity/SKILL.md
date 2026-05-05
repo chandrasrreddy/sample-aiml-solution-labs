@@ -1,62 +1,61 @@
 ---
 name: bedrock-capacity
-display_name: Bedrock Capacity Planning
-description: "RPM/TPM capacity planning for Amazon Bedrock. Activate when the user asks about requests per minute, tokens per minute, throttling, quotas, capacity limits, tier selection (Flex/Standard/Priority/Reserved), or whether their workload will fit. Also activate as a follow-up to bedrock-pricing or agentcore-pricing estimates."
-icon: "📊"
-trigger: bedrock capacity check
-inputs:
-  - name: tier
-    description: "Service tier to check against (Flex, Standard, Priority, Reserved). Default: Standard."
-    type: string
-    required: false
-tools: [run_python, file_read]
+description: >
+  Use when checking RPM/TPM capacity limits, quota utilization, throttling risk,
+  or tier selection (Flex/Standard/Priority/Reserved) for Amazon Bedrock workloads.
+  Handles capacity fit checks, optimization recommendations, and ramp planning.
+  Also activate as a follow-up after bedrock-pricing or agentcore-pricing estimates.
+  Do NOT use for model pricing (load bedrock-pricing),
+  AgentCore infrastructure costs (load agentcore-pricing), or business value ROI (load agent-business-value).
 ---
 
-## Overview
+# Bedrock Capacity Planning
 
-Checks if a workload fits within Bedrock RPM/TPM limits and guides optimization when it doesn't. Part of a 4-skill family: `bedrock-pricing`, `agentcore-pricing`, `bedrock-capacity` (this), `agent-business-value`.
+## Critical Rules
 
-## ⚠️ LIMITS RULE
+- **ALWAYS use `query_quotas()` for real per-model, per-region RPM/TPM limits.** Never use hardcoded tier ranges — actual limits vary by model.
+- **If `bedrock_quotas.json` is missing, say so explicitly.** Do NOT fall back to approximate ranges — they create false confidence.
+- **Claude 3.7 and all later Claude models (4.x, Opus, Sonnet, Haiku): always set `output_burndown_rate=5`.** All other models use 1x.
+- **Cache reads don't count toward TPM** — this is the biggest TPM saver.
+- **`max_tokens` is reserved upfront** — always check for waste (e.g., set to 4096 but output is only ~100).
+- **Do NOT recommend a quota increase before walking through optimization.**
 
-**ALWAYS use `query_quotas()` to get real per-model, per-region RPM/TPM limits.** Do NOT use hardcoded tier ranges — they are inaccurate (actual limits vary wildly by model).
+## Prerequisites
 
-If `bedrock_quotas.json` is missing, **say so explicitly** and guide the user to refresh:
-```
-python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh
-```
-
-Do NOT fall back to approximate ranges — they create false confidence.
-
-Explanations are embedded directly in function return values via `result["explanation"]` — no separate skill needed.
+- Cache file `~/bedrock_quotas.json` must exist
+- If missing or stale, instruct user to refresh:
+  ```bash
+  # If USE_IN_KIRO or USE_IN_CLAUDE_CODE is set:
+  python3 tco_bva_capacity_skills/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh
+  # Otherwise (Quick):
+  python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh
+  ```
+- For multi-region: `--quota-regions "us-west-2,us-east-1,eu-west-1"`
 
 ## Workflow
 
-1. **Load script** → inventory cache
-2. **Look up actual limits** → `query_quotas()` for the specific model + region
-3. **Compute required RPM/TPM** → `check_capacity_fit()`
-4. **Compare** → fits? Show utilization %. Doesn't fit? → 3-step optimization framework
-5. **After optimization** → re-run check
-
-### Load Script
+### 1. Load the Pricing Script
 
 ```python
 import sys, os
 sys.argv = ['bedrock_pricing.py']
-_p = os.path.join(os.getcwd(), "skills/bedrock-pricing/scripts/bedrock_pricing.py")
-if not os.path.exists(_p):
-    _p = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
-exec(open(_p).read())
+
+if os.environ.get("USE_IN_KIRO") or os.environ.get("USE_IN_CLAUDE_CODE"):
+    script = "tco_bva_capacity_skills/skills/bedrock-pricing/scripts/bedrock_pricing.py"
+else:
+    script = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
+
+if not os.path.exists(script):
+    raise RuntimeError(
+        f"bedrock_pricing.py not found at: {script}\n"
+        f"If using Kiro/Claude Code, set USE_IN_KIRO=1 or USE_IN_CLAUDE_CODE=1.\n"
+        f"If using Quick, ensure the script is installed at the expected path."
+    )
+
+exec(open(script).read())
 ```
 
-## Cache File
-
-| Cache File | Contents | Refresh |
-|-----------|----------|---------|
-| `~/bedrock_quotas.json` | Per-model RPM/TPM/TPD defaults for all regions | `--refresh` |
-
-Multi-region: `--quota-regions "us-west-2,us-east-1,eu-west-1"` | Skip quotas: `--skip-quotas`
-
-## Step 1: Look Up Real Limits
+### 2. Look Up Real Limits
 
 ```python
 home = os.path.expanduser("~")
@@ -69,91 +68,125 @@ actual_rpm_limit = rpm_quotas[0]["value"] if rpm_quotas else None
 actual_tpm_limit = tpm_quotas[0]["value"] if tpm_quotas else None
 ```
 
-If `rpm_quotas` is empty → cache is missing. Tell user to run `--refresh`. Do NOT guess.
+- If `rpm_quotas` is empty, cache is missing. Tell user to run `--refresh`. Do NOT guess.
+- If user does not specify a region or model, ask before proceeding.
 
-## Step 2: Compute Required RPM/TPM and Compare
+### 3. Present Assumptions
 
-`check_capacity_fit()` requires real quota limits — pass them directly from Step 1.
+Show all workload parameters and ask user to confirm before calculating:
+- Questions per month and sessions per month
+- Tools invoked per question
+- Output burndown rate (5x for Claude 3.7+, 1x for others)
+- `max_tokens` setting
+- Peak-to-average ratio (default: 3x)
+- Active hours per day and active days per month
 
-**RECOMMENDED:** Pass `token_profile=model_result['assumptions']` to ensure the capacity check uses the exact same token parameters as the cost estimate. This prevents mismatches between the cost calculation and capacity check.
+### 4. Compute Required RPM/TPM
 
 ```python
-if actual_rpm_limit is None or actual_tpm_limit is None:
-    print("⚠️ Quota cache missing. Run --refresh to get actual per-model limits.")
-else:
-    result = check_capacity_fit(
-        questions_per_month=1_000_000,
-        sessions_per_month=200_000,
-        rpm_limit=actual_rpm_limit,       # REQUIRED — from query_quotas()
-        tpm_limit=actual_tpm_limit,       # REQUIRED — from query_quotas()
-        output_burndown_rate=5,      # Claude 3.7 and all later Claude models (4.x, Opus, Sonnet, Haiku) = 5×
-        max_tokens_setting=4096,
-        peak_to_avg_ratio=3.0,       # peak = 3× average during active hours
-        active_hours_per_day=12,
-        active_days_per_month=22,
-        token_profile=model_result['assumptions'],  # reuses exact token params from cost estimate
-    )
-    # result["fits"] is True/False
-    # result["rpm_utilization_pct"] and result["tpm_utilization_pct"] show how close to limits
+result = check_capacity_fit(
+    questions_per_month=1_000_000,
+    sessions_per_month=200_000,
+    tools_invoked=5,
+    output_burndown_rate=5,
+    max_tokens_setting=4096,
+    peak_to_avg_ratio=3.0,
+    active_hours_per_day=12,
+    active_days_per_month=22,
+)
 ```
+
+### 5. Compare Against Limits
+
+```python
+if actual_rpm_limit:
+    rpm_ok = result["peak_rpm"] <= actual_rpm_limit
+    tpm_ok = result["effective_peak_tpm"] <= actual_tpm_limit
+else:
+    print("Quota cache missing. Run --refresh to get actual per-model limits.")
+```
+
+### 6. Present Results
+
+- If workload fits: show utilization % for both RPM and TPM
+- If workload does NOT fit: walk through the 3-Step Optimization Framework below
+- After optimization adjustments: re-run `check_capacity_fit()` to verify
 
 ## Key Concepts
 
 | Term | Definition |
 |------|-----------|
-| **RPM** | Requests/min — each LLM invocation = 1 request. Agent with N tools = N+1 requests/question. |
-| **TPM** | Tokens/min — quota deducted at request start using `max_tokens` (not actual output). |
-| **Burndown rate** | Output token multiplier. **Claude 3.7 and all later Claude models (4.x, Opus, Sonnet, Haiku) = 5×** (1 output = 5 TPM). All others = 1×. |
-| **Effective TPM** | input_tokens + max_tokens_setting. Reduce `max_tokens` to free quota. |
+| **RPM** | Requests/min. Each LLM invocation = 1 request. Agent with N tools = N+1 requests/question |
+| **TPM** | Tokens/min. Quota deducted at request start using `max_tokens` (not actual output) |
+| **Burndown rate** | Output token multiplier. Claude 3.7+ = 5x (1 output token = 5 TPM). All others = 1x |
+| **Effective TPM** | input_tokens + (max_tokens_setting x burndown_rate). Reduce `max_tokens` to free quota |
 
 ## When Workload Doesn't Fit: 3-Step Framework
 
-**Do NOT immediately recommend a quota increase.** Walk through in order:
+Walk through these in order. Do NOT skip to quota increase.
 
-### Step 1 — Optimize (fill in with actual values from the estimate)
+### Step 1: Optimize
+
+Fill in with actual values from the estimate:
 
 | Check | Question | Impact |
 |-------|----------|--------|
-| RAG chunks | Can we reduce (e.g. 10→5)? | Saves ~1,500 tokens/turn, compounds |
-| System prompt | Can it be shorter? | Sent every turn — compounding |
-| Prompt caching | Enabled? **Cache reads DON'T count toward TPM** | Biggest TPM saver |
 | `max_tokens` | Set to 4,096 but output is ~100? Reduce to ~300 | Frees ~3,796 TPM/request |
-| Conversation history | How many past turns in context? | Limit to 3–5 |
-| Tool count | 20 tools × 200 tokens = 4,000/turn. Use dynamic selection? | Reduce per-request |
+| Prompt caching | Enabled? Cache reads DON'T count toward TPM | Biggest TPM saver |
+| RAG chunks | Can we reduce (e.g., 10 to 5)? | Saves ~1,500 tokens/turn, compounds |
+| System prompt | Can it be shorter? | Sent every turn, compounding |
+| Tool count | 10 tools x 100 tokens = 1,000/turn. Use dynamic selection? | Reduce per-request |
+| Conversation history | How many past turns in context? | Limit to 3-5 |
 | Architecture | Monolithic? Split into parent + sub-agents | Fewer tools per agent |
-| Output length | Constrain with `max_tokens` + prompt instructions | Claude 5× burndown |
+| Output length | Constrain with `max_tokens` + prompt instructions | Claude 5x burndown |
 
-### Step 2 — Traffic Profile
+### Step 2: Traffic Profile
 
 | Question | Why |
 |----------|-----|
 | Peak RPM (P99 over 1-min window)? | Quotas must handle peaks |
 | Sustained P90 over 5-min window? | Service team cares about sustained |
 | Active hours/days? | Off-peak = lower effective RPM |
-| Default: peak = 3× average during active hours | User should validate |
+| Default: peak = 3x average during active hours | User should validate |
 
-### Step 3 — Ramp Plan
+### Step 3: Ramp Plan
 
 | Question | Why |
 |----------|-----|
-| Volume needed now or in 3–6 months? | Capacity allocated in steps |
+| Volume needed now or in 3-6 months? | Capacity allocated in steps |
 | Current monthly volume? | Baseline for ramp |
 | Consumption trajectory? | Increases granted after demonstrating usage |
 | Target at 1 / 3 / 6 months? | Aligns allocation with growth |
 
-## Lessons Learned
+## Defaults
 
-### Do
-- Auto-run capacity check after cost estimates
-- Always use `query_quotas()` for real limits — never hardcoded ranges
-- Claude 3.7 and all later Claude models (4.x, Opus, Sonnet, Haiku): always set `output_burndown_rate=5`
-- Cache reads don't count toward TPM — biggest saver
-- `max_tokens` is reserved upfront — always check for waste
-- Present optimization checklist with actual values filled in
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| Output burndown rate | 5x (Claude 3.7+) | 1x for all other models |
+| max_tokens setting | 4,096 | Check for waste, reduce if actual output is small |
+| Peak-to-average ratio | 3.0x | Peak = 3x average during active hours |
+| Active hours/day | 12 | Ask user to validate |
+| Active days/month | 22 | Business days |
 
-### Don't
-- Don't use approximate tier ranges — they're misleading
-- Don't treat average RPM as peak — apply 3× ratio
-- Don't assume 24/7 traffic — ask about active hours
-- Don't skip ramp plan — AWS allocates in steps
-- Don't recommend quota increase before optimization
+## Explanation Rendering
+
+`result["explanation"]` contains:
+
+| Section | What it shows |
+|---------|---------------|
+| `rpm_calculation` | How peak RPM was derived |
+| `tpm_calculation` | How effective peak TPM was derived |
+| `tier_comparison` | Fit/no-fit against actual quota limits |
+
+### Rules for rendering:
+- Default: show fit/no-fit summary with utilization %
+- On demand: format explanation sections as markdown
+- Always use markdown, never HTML artifacts or details tags
+
+## Related Skills
+
+| Skill | When to load |
+|-------|-------------|
+| `bedrock-pricing` | User needs model cost estimates alongside capacity check |
+| `agentcore-pricing` | User needs AgentCore infrastructure costs |
+| `agent-business-value` | User wants ROI or business case after capacity is confirmed |
