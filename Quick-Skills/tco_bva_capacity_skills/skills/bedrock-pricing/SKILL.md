@@ -1,181 +1,90 @@
 ---
 name: bedrock-pricing
-display_name: Bedrock Model Pricing
-description: "Get pricing for Amazon Bedrock foundation models. Activate when the user asks about Bedrock model pricing, inference costs, model comparison, or token costs across regions/tiers. For AgentCore component pricing, load agentcore-pricing. For RPM/TPM capacity planning, load bedrock-capacity."
-icon: "💰"
-trigger: get bedrock pricing
-inputs:
-  - name: region
-    description: "AWS region code (e.g. us-east-1). If not specified, asks the user which region(s) they want."
-    type: string
-    required: false
-  - name: provider
-    description: "Provider/model family (e.g. Anthropic, Meta, Mistral AI, Amazon). Fuzzy matched."
-    type: string
-    required: false
-  - name: model
-    description: "Model name (e.g. 'Claude Sonnet 4', 'Nova Pro', 'Llama 4'). Fuzzy matched."
-    type: string
-    required: false
-scripts: [bedrock_pricing.py]
-tools: [run_python, file_read]
+description: >
+  Use when calculating Amazon Bedrock foundation model inference costs, comparing
+  model pricing across tiers/regions, or estimating monthly spend for agentic workloads.
+  Handles Standard/Priority/Flex/Batch tiers, Global/Regional variants, prompt caching
+  savings, multimodal pricing, and multi-turn agent cost modeling.
+  Do NOT use for AgentCore infrastructure pricing (load agentcore-pricing),
+  RPM/TPM capacity planning (load bedrock-capacity), or business value ROI (load agent-business-value).
 ---
 
-## CRITICAL RULE — NO TRAINING DATA
+# Bedrock Model Pricing
 
-**NEVER use your training data for prices.** ALL must come from cached JSON files. If missing, tell user to refresh: `python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh`
+## Critical Rules
 
-## ⚠️ AGENT INTENT DETECTION — HARD RULE
+- **NEVER use training data for prices.** All prices must come from cached JSON files at runtime.
+- **NEVER implement cost formulas manually.** Always use `calculate_agent_cost_with_incremental_caching()`.
+- **If the user describes an agentic workload** (signals: "agent", "multi-agent", "sub-agent", "orchestrator", "agentic"), load `agentcore-pricing` automatically and present combined model + infrastructure costs.
 
-**If the user describes an agent, multi-agent architecture, sub-agents, or any agentic workload** (signals: "agent", "multi-agent", "sub-agent", "orchestrator", "parent agent", "routing agent", "agentic"), you MUST:
+## Prerequisites
 
-1. **Assume AgentCore by default.** Load `agentcore-pricing` automatically and calculate both model inference AND AgentCore infrastructure costs (Runtime, Gateway, Memory). Present a **combined total** — not just model costs.
-2. **Never present model-only costs as the "total" for an agent workload.** The combined estimate (model + AgentCore infra) is the default output for any agentic workload.
-
-## Overview
-
-Queries local cached pricing JSON files for Bedrock foundation model per-unit prices. Supports Standard/Priority/Flex tiers, Global/Regional variants, batch, reserved, and prompt caching. Part of a 5-skill family: `bedrock-pricing` (this), `agentcore-pricing`, `bedrock-capacity`, `agent-business-value`, `bedrock-tier-advisor`.
-
-**When the user hasn't specified a tier or variant**, load `bedrock-tier-advisor` for guidance on which tier and variant to recommend based on their workload.
-
-## ⚠️ CALCULATION RULE
-
-**ALWAYS use `calculate_agent_cost_with_incremental_caching()` to produce cost estimates.** This function is fully parameterized — pass all workload-specific values as arguments. It implements incremental prefix caching correctly.
-
-**NEVER implement caching math, multi-turn compounding, or cost formulas manually.**
-
-Explanations are embedded directly in function return values via `result["explanation"]` — no separate skill needed.
-
-## ⚠️ EXPLANATION RENDERING — ON-DEMAND MARKDOWN
-
-Every cost function returns `result["explanation"]` — a structured dict with step-by-step breakdown of how the numbers were calculated. **Do NOT emit this by default.**
-
-### Pattern:
-1. **Default output**: Show summary table + key numbers as markdown. Offer: *"Want to see the step-by-step breakdown?"*
-2. **On demand**: When user asks, read `result["explanation"]` from the Python namespace (already computed — no re-run needed) and format as **markdown inline in chat**.
-3. **Show all agents**: When explaining a multi-agent estimate, show all agents' breakdowns, not just the top cost driver.
-
-### Rules:
-- **Always markdown** — never HTML artifacts for explanations
-- **No `<details>` tags** — they don't render interactively in chat or session tabs
-- **No re-computation** — the explanation dict is already in memory from the estimate run
-- **No explainability skill** — it is deleted. This function-embedded approach replaces it entirely
-
-### Explanation sections per function:
-| Function | Sections in `result["explanation"]` |
-|----------|-------------------------------------|
-| `calculate_agent_cost_with_incremental_caching()` | `token_profile`, `turn_by_turn_q1`, `cross_question_caching`, `cache_math`, `no_cache_baseline`, `monthly_rollup`, `prices_used` |
-| `calculate_agentcore_cost()` | `session_profile`, `runtime`, `gateway`, `memory`, `grand_total`, `cost_composition` |
-| `calculate_evaluation_cost()` | `sampling`, `trace_size`, `builtin_evaluators`, `custom_llm_evaluators`, `custom_code_evaluators`, `grand_total` |
-| `calculate_business_value()` | `dim1_time_savings`, `dim2_churn_reduction` (conditional), `dim3_sales_increase` (conditional), `summary` |
-| `check_capacity_fit()` | `rpm_calculation`, `tpm_calculation`, `quota_comparison` |
-
-To render: iterate over the dict keys, format as markdown headers + bullet lists. Values are pre-formatted strings ready for display.
+- Cache files must exist in `~/` (see Cache Files section)
+- If cache is missing or stale (>7 days), instruct user to refresh:
+  ```bash
+  # If USE_IN_KIRO or USE_IN_CLAUDE_CODE is set:
+  python3 tco_bva_capacity_skills/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh
+  # Otherwise (Quick):
+  python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh
+  ```
 
 ## Workflow
 
-1. **Gather region and model** (Step 0 — before any query)
-2. **Load inventory cache** (Step 1)
-3. **Look up prices** → `query_model_pricing()` + `extract_bedrock_model_prices()`
-4. **Detect caching support** → check for cache-read/cache-write entries in results
-5. **Calculate cost** → `calculate_agent_cost_with_incremental_caching()` — pass prices + workload params
-6. **Present results** → show assumptions, breakdown, no-cache baseline, savings %
-
-### Step 0: Gather Region and Model
-
-**Region — HARD GATE:** Do NOT call `query_model_pricing()` without a region. If the user hasn't specified one, ask before proceeding.
-
-**Model — Depends on intent:**
-- If the user wants a **cost estimate**, a specific model is required — ask.
-- If the user wants to **compare models**, query the cache for the most recent models from the Anthropic and Alibaba (Qwen) families in the user's region. Present the top 3–4 options and ask the user to pick one or suggest a different model. Never query all models unfiltered.
-
-## Cache Files
-
-| Cache File | Contents |
-|-----------|----------|
-| `~/bedrock_pricing.json` | 1P Amazon models + newer 3P models |
-| `~/bedrock_pricing_3p.json` | 3P Marketplace models (Anthropic, etc.) |
-| `~/bedrock_pricing_service.json` | Very new models |
-
-Fallback path for 3P: `~/My Strands Examples/bedrock_pricing_3p.json`
-
-**Cache refresh**: `python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh`
-
-**Cache staleness**: The script automatically warns (via stderr) when any cache file is older than 7 days. If you see this warning in the output, advise the user to refresh: `python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh`
-
-## Step 1: Load Inventory Cache
-
-Always runs first:
+### 1. Load the Pricing Script
 
 ```python
 import sys, os
 sys.argv = ['bedrock_pricing.py']
-_p = os.path.join(os.getcwd(), "skills/bedrock-pricing/scripts/bedrock_pricing.py")
-if not os.path.exists(_p):
-    _p = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
-exec(open(_p).read())
-# Functions available: query_model_pricing(), query_agentcore_pricing(),
-# calculate_agent_cost_with_incremental_caching(), calculate_agentcore_cost(),
-# calculate_business_value(), calculate_evaluation_cost(), check_capacity_fit()
+
+if os.environ.get("USE_IN_KIRO") or os.environ.get("USE_IN_CLAUDE_CODE"):
+    script = "tco_bva_capacity_skills/skills/bedrock-pricing/scripts/bedrock_pricing.py"
+else:
+    script = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
+
+if not os.path.exists(script):
+    raise RuntimeError(
+        f"bedrock_pricing.py not found at: {script}\n"
+        f"If using Kiro/Claude Code, set USE_IN_KIRO=1 or USE_IN_CLAUDE_CODE=1.\n"
+        f"If using Quick, ensure the script is installed at the expected path."
+    )
+
+exec(open(script).read())
 ```
 
-## Step 2: Look Up Prices
+This makes all functions available: `query_model_pricing()`, `extract_bedrock_model_prices()`, `calculate_agent_cost_with_incremental_caching()`, and others.
+
+### 2. Look Up Model Prices
 
 ```python
 home = os.path.expanduser("~")
 results = query_model_pricing(home, region_filter="us-east-1", provider_filter="Anthropic", model_filter="Sonnet 4.6")
 prices = extract_bedrock_model_prices(results)
-# prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
+# Returns: {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
 ```
 
-### Tier Summary (when user doesn't specify a tier)
+- If the user does not specify a region, ask which region(s) they want
+- If the user does not specify a tier, use `all_tiers=True` and present a comparison table
+- Default to **Standard Global** for cost calculations unless user picks otherwise
 
-When the user asks for pricing without specifying a tier, use `all_tiers=True` to show a quick comparison:
+### 3. Detect Caching Support
 
-```python
-all_prices = extract_bedrock_model_prices(results, all_tiers=True)
-# all_prices = {
-#   "Standard Global":  {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
-#   "Standard Regional": {"input": 3.3, "output": 16.5, "cache_read": 0.33, ...},
-#   "Batch Global":     {"input": 1.5, "output": 7.5, ...},
-#   "Priority Global":  {"input": ..., "output": ..., ...},  # only if model supports it
-#   "Flex Global":      {"input": ..., "output": ..., ...},  # only if model supports it
-# }
-```
+A model supports prompt caching if `cache_read` and `cache_write` keys exist and are non-None in the extracted prices. Some models (e.g., Amazon Nova) have $0.00 cache write — caching is free for writes.
 
-Present the tier summary as a markdown table. Load `bedrock-tier-advisor` to determine the best default tier for the user's workload. Not all models have all tiers — only show what's available.
+### 4. Present Assumptions
 
-### Specific Tier or Variant
+Show all parameters and their values. Ask the user to confirm before calculating. Key parameters to surface:
+- Sessions per month
+- Questions per session
+- Input/output tokens per question
+- System prompt tokens
+- Number of tools passed and invoked
+- RAG chunks and tokens per chunk
+- Whether prompt caching is enabled (and supported)
+- Tier and variant being used
 
-```python
-# Regional (in-region) pricing
-prices = extract_bedrock_model_prices(results, variant="Regional")
+Only proceed to calculation after user confirms or adjusts values.
 
-# Priority tier
-prices = extract_bedrock_model_prices(results, tier="Priority")
-
-# Batch pricing
-prices = extract_bedrock_model_prices(results, tier="Batch")
-
-# Flex tier, regional
-prices = extract_bedrock_model_prices(results, tier="Flex", variant="Regional")
-```
-
-### Multimodal Models (Nova)
-
-For models with image/audio/video token pricing:
-
-```python
-prices = extract_bedrock_model_prices(results, include_multimodal=True)
-# prices = {"input": ..., "output": ..., "cache_read": ..., "cache_write": ...,
-#           "image_input": ..., "audio_input": ..., "video_input": ...}
-```
-
-## Step 3: Detect Caching Support
-
-A model supports prompt caching if `cache_read` and `cache_write` keys exist in the extracted prices (non-None). Some models (e.g., Amazon Nova) have `$0.00` cache write price — caching is free for writes.
-
-## Step 4: Calculate Cost
+### 5. Calculate Cost
 
 ```python
 result = calculate_agent_cost_with_incremental_caching(
@@ -188,65 +97,110 @@ result = calculate_agent_cost_with_incremental_caching(
     input_tokens=100,
     output_tokens=100,
     system_prompt_tokens=1000,
-    tool_desc_tokens=500,
+    tools_passed_to_agent=10,
+    tool_spec_tokens=100,
     rag_chunks=10,
     rag_tokens_per_chunk=300,
-    tools_invoked=3,
+    tools_invoked=5,
     tool_call_tokens=100,
-    tool_result_tokens=500,
+    tool_result_tokens=100,
 )
-# Returns: with_cache, no_cache, savings_monthly, savings_pct, assumptions, per_question, per_session
 ```
 
-Always present the savings comparison (cached vs no-cache baseline).
+Pass all workload-specific values as arguments. The function handles incremental prefix caching, multi-turn compounding, and session-aware Q1/Q2+ logic internally.
+
+### 6. Present Results
+
+1. Show a summary markdown table with: monthly cost (cached), no-cache baseline, savings %, per-session and per-question costs
+2. Include cache file timestamps to show data freshness
+3. Offer: *"Want to see the step-by-step breakdown?"*
+
+- If user asks for the breakdown, read `result["explanation"]` (already computed — no re-run needed) and format as markdown headers + bullet lists
+
+### 7. Detect Agentic Workloads
+
+- If the user's request involves agents, multi-agent architectures, or orchestrators:
+  1. Load `agentcore-pricing` skill
+  2. Calculate AgentCore infrastructure costs (Runtime, Gateway, Memory)
+  3. Present **combined total** (model + infrastructure) — never model-only for agentic workloads
+
+## Tier and Variant Options
+
+```python
+# All tiers comparison (when user doesn't specify)
+all_prices = extract_bedrock_model_prices(results, all_tiers=True)
+
+# Specific tier/variant combinations
+prices = extract_bedrock_model_prices(results, variant="Regional")
+prices = extract_bedrock_model_prices(results, tier="Priority")
+prices = extract_bedrock_model_prices(results, tier="Batch")
+prices = extract_bedrock_model_prices(results, tier="Flex", variant="Regional")
+
+# Multimodal models (Nova — includes image/audio/video pricing)
+prices = extract_bedrock_model_prices(results, include_multimodal=True)
+```
+
+Only show tiers that exist for the model — not all models have all tiers.
+
+## Cache Files
+
+| File | Contents |
+|------|----------|
+| `~/bedrock_pricing.json` | 1P Amazon models + newer 3P models |
+| `~/bedrock_pricing_3p.json` | 3P Marketplace models (Anthropic, etc.) |
+| `~/bedrock_pricing_service.json` | Very new models |
 
 ## Model Defaults
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| Region | (ask user) | No default |
-| Service tier | Standard | Standard/Priority/Flex |
+| Region | (ask user) | No default — always confirm |
+| Service tier | Standard | Standard/Priority/Flex/Batch |
 | Inference variant | Global (cross-region) | Global or Regional |
-| Input tokens/question | 100 | User's actual question text |
+| Input tokens/question | 100 | User's question text |
 | Output tokens/question | 100 | Model's response text |
 | System prompt tokens | 1,000 | Sent with every LLM call |
-| Prompt caching | **Enabled** | Default ON for supported models |
+| Tools passed to agent | 10 | Number of tools in schema |
+| Tool spec tokens | 100 | Tokens per tool specification |
+| Tools invoked/question | 5 | Tool calls per question |
+| Tool result tokens | 100 | Tokens per tool result |
+| Prompt caching | Enabled | Default ON for supported models |
 | RAG chunks | 10 | Per question |
 | Tokens per RAG chunk | 300 | |
 
-## Usagetype Patterns for Cache Pricing
+## Explanation Rendering
 
-| Cache File | Cache Read Pattern | Cache Write Pattern |
-|-----------|-------------------|-------------------|
-| AmazonBedrock (1P) | `{Model}-cache-read-input-token-count{-tier}{-variant}` | `{Model}-cache-write-input-token-count{-tier}{-variant}` |
-| AmazonBedrockFoundationModels (3P) | `CacheReadInputTokenCount{_LCtx}{_Global}` | `CacheWriteInputTokenCount{_LCtx}{_Global}` |
-| AmazonBedrockService | `{Model}-cache-read-input-token-count{-long-context}-cross-region-global` | `{Model}-cache-write-input-token-count{-long-context}-cross-region-global` |
+Every cost function returns `result["explanation"]` with structured breakdown sections:
+
+| Section | What it shows |
+|---------|---------------|
+| `token_profile` | Token counts per turn |
+| `turn_by_turn_q1` | Q1 cache split per turn |
+| `cross_question_caching` | Q2+ cache behavior |
+| `cache_math` | Monthly cache read/write/regular totals |
+| `no_cache_baseline` | Cost without caching |
+| `monthly_rollup` | Final monthly/annual totals |
+| `prices_used` | Prices from cache (for auditability) |
+
+### Rules for rendering explanations:
+- Default: show summary only, offer breakdown on demand
+- Always use markdown — never HTML artifacts or `<details>` tags
+- Never re-compute — the explanation dict is already in memory
+- For multi-agent estimates, show all agents' breakdowns
 
 ## Output Format
 
-All outputs should include:
-- Cache file timestamps (data freshness)
-- All pricing from cache — never from training data
+All outputs must include:
+- Cache file timestamps (data freshness indicator)
 - Markdown tables grouped by Region → Provider → Model → Tier
 - Both monthly and annual totals
 - Savings % vs no-caching baseline
+- All prices sourced from cache — never from training data
 
-## Lessons Learned
+## Related Skills
 
-### Assumptions
-- Caching of prior question-response history across questions is not modeled (future consideration).
-- Cache TTL is assumed infinite within a session (no eviction modeled).
-
-### Do
-- Always run cache inventory first
-- Read ALL prices from cache files at runtime
-- Show the complete math breakdown — users want to verify
-- Apply prompt caching by default when supported
-- For agent workloads, follow the **Agent Intent Detection** rule above — load `agentcore-pricing` proactively
-- Auto-suggest loading `bedrock-capacity` for RPM/TPM planning
-
-### Don't
-- NEVER use training data for prices
-- NEVER implement cost formulas manually — always use the function
-- Don't hardcode provider/model/region lists — extract from cache
-- Don't skip caching savings display
+| Skill | When to load |
+|-------|-------------|
+| `agentcore-pricing` | User describes an agentic workload needing infrastructure costs |
+| `bedrock-capacity` | User asks about RPM/TPM limits or capacity planning |
+| `agent-business-value` | User wants ROI, productivity gains, or FTE equivalents |
