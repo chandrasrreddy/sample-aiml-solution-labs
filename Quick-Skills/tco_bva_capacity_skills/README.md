@@ -86,7 +86,7 @@ The skills will resolve the script path relative to the workspace root.
 
 ### Create the Pricing Cache Files (all platforms)
 
-The skills read pricing data from local JSON cache files in your home directory. You **must** generate these before first use.
+The skills read pricing data from local JSON cache files in `~/bedrock_cache/`. You **must** generate these before first use.
 
 **Run from your terminal:**
 
@@ -102,7 +102,7 @@ This command fetches:
 - **Pricing data** (per-token costs for all models, all tiers) — covers **all 35 Bedrock regions** automatically. The AWS Pricing API returns global data in a single call.
 - **RPM/TPM/TPD quotas** — fetched per-region for **10 major regions** by default: `us-east-1`, `us-west-2`, `eu-west-1`, `eu-central-1`, `ap-northeast-1`, `ap-southeast-1`, `ap-southeast-2`, `ap-south-1`, `ca-central-1`, `sa-east-1`. Use `--all-regions` for all 33, or `--quota-regions` to specify your own.
 
-This creates 5 files in your home directory (`~/`):
+This creates 5 files in `~/bedrock_cache/`:
 
 | File | Contents | Size |
 |------|----------|------|
@@ -118,7 +118,6 @@ This creates 5 files in your home directory (`~/`):
 --skip-quotas                    # Pricing only, skip quotas (~2 min)
 --quota-regions "us-west-2,us-east-1"  # Override default regions
 --all-regions                    # ALL 33 Bedrock regions (slow — ~15 min)
---output-dir /path/to/dir        # Save cache files to a custom directory
 ```
 
 > **💡 Tip:** Re-run `--refresh` periodically (e.g., monthly) to pick up new models and price changes. The skills always read from these local files — they never call the Pricing API at runtime.

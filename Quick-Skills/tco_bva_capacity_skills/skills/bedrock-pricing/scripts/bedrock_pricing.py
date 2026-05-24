@@ -6,12 +6,11 @@ Bundled with the 'bedrock-pricing' Amazon Quick skill.
 
 This script has TWO modes:
   1. REFRESH MODE (run from Terminal): Fetches fresh pricing data from the AWS Pricing API
-     and saves it to ~/bedrock_pricing.json (or specified output paths).
+     and saves it to ~/bedrock_cache/.
      Requires: boto3, valid AWS credentials.
      
      Usage:
        python3 bedrock_pricing.py --refresh
-       python3 bedrock_pricing.py --refresh --output-dir /path/to/dir
 
   2. QUERY MODE (called by the skill inside the sandbox): Reads cached JSON files,
      applies filters, and outputs Markdown.
@@ -160,37 +159,95 @@ def detect_variant(attrs: dict) -> str:
     return "Standard"
 
 
+def check_pricing_data_status(cache_dir=None):
+    """Lightweight pricing data freshness check — uses only stat calls, no file reads.
+
+    Call once at the start of a session to verify cache files are present and fresh.
+
+    Args:
+        cache_dir: Directory to check. Defaults to ~/bedrock_cache.
+
+    Returns:
+        dict with keys:
+            - status: "ok", "stale", or "missing"
+            - found: list of {"file": str, "path": str, "age_days": float}
+            - missing: list of filenames not found anywhere
+            - stale: list of {"file": str, "path": str, "age_days": int}
+            - refresh_command: str — command to run to fix issues
+    """
+    if cache_dir is None:
+        cache_dir = os.path.expanduser("~/bedrock_cache")
+
+    all_files = {
+        "pricing": list(CACHE_FILES.values()),
+        "quotas": [QUOTAS_CACHE_FILE],
+    }
+    flat_files = [f for files in all_files.values() for f in files if f]
+
+    found = []
+    missing = []
+    stale = []
+
+    for filename in flat_files:
+        filepath = os.path.join(cache_dir, filename)
+        if os.path.exists(filepath):
+            age_days = (time.time() - os.path.getmtime(filepath)) / 86400
+            found.append({"file": filename, "path": filepath, "age_days": round(age_days, 1)})
+            if age_days > 7:
+                stale.append({"file": filename, "path": filepath, "age_days": int(age_days)})
+        else:
+            missing.append(filename)
+
+    # Determine overall status
+    if missing and all(f in missing for f in list(CACHE_FILES.values()) if f):
+        status = "missing"
+    elif stale:
+        status = "stale"
+    elif missing:
+        status = "partial"
+    else:
+        status = "ok"
+
+    # Build refresh command based on environment
+    if os.environ.get("USE_IN_KIRO") or os.environ.get("USE_IN_CLAUDE_CODE"):
+        refresh_cmd = "python3 tco_bva_capacity_skills/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh"
+    else:
+        refresh_cmd = "python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh"
+
+    return {
+        "status": status,
+        "found": found,
+        "missing": missing,
+        "stale": stale,
+        "refresh_command": refresh_cmd,
+    }
+
+
 def load_cache_file(cache_dir: str, service_code: str) -> list:
     """Load a pricing cache JSON file. Warns if file is older than 7 days."""
     filename = CACHE_FILES.get(service_code, "")
     if not filename:
         return []
-    paths_to_try = [
-        os.path.join(cache_dir, filename),
-        os.path.expanduser(f"~/{filename}"),
-        os.path.join(cache_dir, "My Strands Examples", filename),
-        os.path.expanduser(f"~/My Strands Examples/{filename}"),
-    ]
-    for filepath in paths_to_try:
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, "r") as f:
-                    # Check cache age — warn if older than 7 days
-                    file_age_days = (time.time() - os.path.getmtime(filepath)) / 86400
-                    if file_age_days > 7:
-                        print(f"⚠️  Cache file '{filename}' is {int(file_age_days)} days old. "
-                              f"Run: python3 ~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py --refresh", file=sys.stderr)
-                    data = json.load(f)
-                items = data.get("PriceList", [])
-                parsed = []
-                for item in items:
-                    if isinstance(item, str):
-                        parsed.append(json.loads(item))
-                    else:
-                        parsed.append(item)
-                return parsed
-            except Exception as e:
-                print(f"Warning: Failed to load {filepath}: {e}", file=sys.stderr)
+    filepath = os.path.join(cache_dir, filename)
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r") as f:
+                # Check cache age — warn if older than 7 days
+                file_age_days = (time.time() - os.path.getmtime(filepath)) / 86400
+                if file_age_days > 7:
+                    print(f"⚠️  Cache file '{filename}' is {int(file_age_days)} days old. "
+                          f"Run --refresh to update.", file=sys.stderr)
+                data = json.load(f)
+            items = data.get("PriceList", [])
+            parsed = []
+            for item in items:
+                if isinstance(item, str):
+                    parsed.append(json.loads(item))
+                else:
+                    parsed.append(item)
+            return parsed
+        except Exception as e:
+            print(f"Warning: Failed to load {filepath}: {e}", file=sys.stderr)
     return []
 
 
@@ -664,6 +721,1577 @@ def calculate_agent_cost_with_incremental_caching(
     }
 
 
+def calculate_compounded_tokens_for_agent(
+    questions_per_agent_session=5,
+    input_tokens=100,
+    output_tokens=150,
+    system_prompt_tokens=2000,
+    tools_passed_to_agent=10,
+    tool_spec_tokens=100,
+    tools_invoked=5,
+    tool_call_tokens=100,
+    tool_result_tokens=100,
+    history_mode="full",  # "full" (b) or "condensed" (a)
+    detail_level="summary",  # "summary" or "full"
+):
+    """Calculate compounded token usage for an agent session with cross-question history.
+
+    Models two levels of token compounding:
+    1. Within a question (span-level): each tool call cycle re-sends the full context
+       accumulated so far within that question.
+    2. Across questions (turn-level): each new question carries the full conversation
+       history from all prior questions in the session.
+
+    The model is stateless — every model call receives system_prompt + tool_specs
+    (as separate parameters) plus the full messages list (conversation history).
+
+    Args:
+        questions_per_agent_session (int): Number of questions in the session (default 5).
+        input_tokens (int): User question tokens per question (default 100).
+        output_tokens (int): Final answer tokens per question (default 150).
+        system_prompt_tokens (int): System prompt tokens, sent every call (default 2000).
+        tools_passed_to_agent (int): Number of tools in schema (default 10).
+        tool_spec_tokens (int): Tokens per tool specification (default 100).
+        tools_invoked (int): Tool calls per question (default 5).
+        tool_call_tokens (int): Model output tokens per tool call JSON (default 100).
+        tool_result_tokens (int|list): Tool response tokens per tool result (default 100).
+            If int: uniform size for all tool results.
+            If list: per-tool result sizes. Length must equal tools_invoked.
+            This allows modeling sub-agents (which return larger results) alongside
+            regular tools. Sub-agent results should be placed first in the list
+            (e.g., [300, 1000, 100, 100, 100] for RAG sub-agent + research sub-agent + 3 regular tools).
+        history_mode (str): "full" = carry all tool calls/results in history (default).
+            "condensed" = carry only user_input + final_answer per prior question.
+
+    Returns:
+        dict: session (list of per-question dicts with per-cycle details),
+            session_total_input, session_total_output,
+            assumptions, explanation.
+    """
+    # NOTE: This function does NOT model the SlidingWindowConversationManager
+    # (default window_size=20 messages in Strands). It assumes NullConversationManager
+    # (no trimming) for worst-case estimation. We may need to revisit this later
+    # to add an option for sliding window trimming.
+
+    # Input validation
+    if questions_per_agent_session <= 0:
+        raise ValueError(f"questions_per_agent_session must be > 0, got {questions_per_agent_session}")
+    if tools_invoked > tools_passed_to_agent:
+        raise ValueError(f"tools_invoked ({tools_invoked}) cannot exceed tools_passed_to_agent ({tools_passed_to_agent})")
+
+    # Normalize tool_result_tokens to a list
+    if isinstance(tool_result_tokens, (int, float)):
+        tool_result_tokens_list = [int(tool_result_tokens)] * tools_invoked
+    elif isinstance(tool_result_tokens, list):
+        if len(tool_result_tokens) != tools_invoked:
+            raise ValueError(
+                f"tool_result_tokens list length ({len(tool_result_tokens)}) must equal "
+                f"tools_invoked ({tools_invoked})"
+            )
+        tool_result_tokens_list = tool_result_tokens
+    else:
+        raise ValueError(f"tool_result_tokens must be int or list, got {type(tool_result_tokens)}")
+
+    # Derived constants
+    tool_desc_tokens = tools_passed_to_agent * tool_spec_tokens
+    fixed_per_call = system_prompt_tokens + tool_desc_tokens  # sent every model call
+    cycles_per_question = tools_invoked + 1  # N tool calls + 1 final answer
+
+    # Per-tool delta (tool_call output + that tool's result)
+    # delta_per_tool[i] = tokens added to context after tool i completes
+    delta_per_tool = [tool_call_tokens + tool_result_tokens_list[i] for i in range(tools_invoked)]
+    total_delta = sum(delta_per_tool)  # total tokens added by all tool exchanges in a question
+
+    # For explanation, compute average delta
+    avg_delta = total_delta / tools_invoked if tools_invoked > 0 else 0
+
+    # History added per question depends on mode
+    if history_mode == "full":
+        # Full trace: user_input + all tool exchanges + final_answer
+        history_per_question = input_tokens + total_delta + output_tokens
+    elif history_mode == "condensed":
+        # Condensed: only user_input + final_answer
+        history_per_question = input_tokens + output_tokens
+    else:
+        raise ValueError(f"history_mode must be 'full' or 'condensed', got '{history_mode}'")
+
+    # Build session cycle-by-cycle
+    session = []
+    accumulated_history = 0  # tokens from all prior questions
+
+    session_total_input = 0
+    session_total_output = 0
+
+    for q in range(1, questions_per_agent_session + 1):
+        # Base input for cycle 1 of this question
+        question_base = fixed_per_call + accumulated_history + input_tokens
+
+        cycles = []
+        accumulated_within_question = 0  # tool exchanges within this question
+
+        for c in range(1, cycles_per_question + 1):
+            # Input = base + tool exchanges accumulated within this question so far
+            cycle_input = question_base + accumulated_within_question
+
+            # Output: tool_call for intermediate cycles, final answer for last cycle
+            if c < cycles_per_question:
+                cycle_output = tool_call_tokens
+                cycle_type = "tool_use"
+            else:
+                cycle_output = output_tokens
+                cycle_type = "end_turn"
+
+            cycle_data = {
+                "cycle": c,
+                "input_tokens": cycle_input,
+                "output_tokens": cycle_output,
+                "type": cycle_type,
+            }
+
+            # Add breakdown only for the very first cycle of Q1
+            if q == 1 and c == 1:
+                cycle_data["breakdown"] = (
+                    f"system_prompt({_fmt(system_prompt_tokens)}) + "
+                    f"tool_specs({_fmt(tool_desc_tokens)}) + "
+                    f"user_input({_fmt(input_tokens)}) = "
+                    f"{_fmt(cycle_input)}"
+                )
+
+            cycles.append(cycle_data)
+
+            # Accumulate within-question context (only for tool cycles, not final answer)
+            if c < cycles_per_question:
+                accumulated_within_question += delta_per_tool[c - 1]
+
+        question_total_input = sum(cyc["input_tokens"] for cyc in cycles)
+        question_total_output = sum(cyc["output_tokens"] for cyc in cycles)
+
+        session.append({
+            "question": q,
+            "cycles": cycles,
+            "question_total_input": question_total_input,
+            "question_total_output": question_total_output,
+        })
+
+        session_total_input += question_total_input
+        session_total_output += question_total_output
+
+        # Accumulate history for next question
+        accumulated_history += history_per_question
+
+    # ── Build explanation ──
+    # Determine if uniform or per-tool result sizes
+    is_uniform = len(set(tool_result_tokens_list)) <= 1 if tool_result_tokens_list else True
+    if is_uniform:
+        delta_explanation = f"tool_call({_fmt(tool_call_tokens)}) + tool_result({_fmt(tool_result_tokens_list[0] if tool_result_tokens_list else 0)}) = {_fmt(delta_per_tool[0] if delta_per_tool else 0)}"
+    else:
+        delta_parts = [f"tool_{i+1}: {_fmt(tool_call_tokens)}+{_fmt(tool_result_tokens_list[i])}={_fmt(delta_per_tool[i])}" for i in range(tools_invoked)]
+        delta_explanation = f"Per-tool deltas: [{', '.join(delta_parts)}], total={_fmt(total_delta)}"
+
+    if is_uniform:
+        history_detail = (
+            f"user({_fmt(input_tokens)}) + {tools_invoked} x delta({_fmt(delta_per_tool[0] if delta_per_tool else 0)}) + answer({_fmt(output_tokens)})"
+            if history_mode == "full"
+            else f"user({_fmt(input_tokens)}) + answer({_fmt(output_tokens)})"
+        )
+    else:
+        history_detail = (
+            f"user({_fmt(input_tokens)}) + total_delta({_fmt(total_delta)}) + answer({_fmt(output_tokens)})"
+            if history_mode == "full"
+            else f"user({_fmt(input_tokens)}) + answer({_fmt(output_tokens)})"
+        )
+
+    explanation = {
+        "derived_constants": {
+            "tool_desc_tokens": f"{tools_passed_to_agent} tools x {tool_spec_tokens} tokens = {_fmt(tool_desc_tokens)}",
+            "fixed_per_call": f"system_prompt({_fmt(system_prompt_tokens)}) + tool_specs({_fmt(tool_desc_tokens)}) = {_fmt(fixed_per_call)}",
+            "delta_per_tool_exchange": delta_explanation,
+            "cycles_per_question": f"{tools_invoked} tool calls + 1 final = {cycles_per_question}",
+            "history_per_question": f"{_fmt(history_per_question)} tokens ({history_mode} mode: {history_detail})",
+        },
+        "per_question_summary": [],
+        "session_summary": {
+            "total_input_tokens": _fmt(session_total_input),
+            "total_output_tokens": _fmt(session_total_output),
+            "total_tokens": _fmt(session_total_input + session_total_output),
+            "total_model_calls": _fmt(questions_per_agent_session * cycles_per_question),
+        },
+    }
+
+    # Per-question explanation
+    running_history = 0
+    for q in range(1, questions_per_agent_session + 1):
+        q_base = fixed_per_call + running_history + input_tokens
+        q_data = session[q - 1]
+        history_after = running_history + history_per_question
+        # Build history breakdown showing how accumulated history was calculated
+        if q == 1:
+            history_breakdown = f"0 (first question, no prior history)"
+            history_after_breakdown = (
+                f"Q1 contributes: user({_fmt(input_tokens)}) + "
+                f"tool_exchanges({_fmt(total_delta)}) + "
+                f"answer({_fmt(output_tokens)}) = {_fmt(history_per_question)}"
+                if history_mode == "full"
+                else f"Q1 contributes: user({_fmt(input_tokens)}) + answer({_fmt(output_tokens)}) = {_fmt(history_per_question)}"
+            )
+        else:
+            history_breakdown = f"{_fmt(running_history)} = {q - 1} prior questions × {_fmt(history_per_question)} each"
+            history_after_breakdown = f"{_fmt(running_history)} (prior) + {_fmt(history_per_question)} (Q{q}) = {_fmt(history_after)}"
+
+        q_explanation = {
+            "question": q,
+            "accumulated_history": history_breakdown,
+            "base_for_cycle_1": f"fixed({_fmt(fixed_per_call)}) + history({_fmt(running_history)}) + user_input({_fmt(input_tokens)}) = {_fmt(q_base)}",
+            "compounding": f"Cycle 1: {_fmt(q_base)}, Cycle {cycles_per_question}: {_fmt(q_base + total_delta - (delta_per_tool[-1] if delta_per_tool else 0) + (delta_per_tool[-1] if delta_per_tool else 0))}",
+            "question_total_input": _fmt(q_data["question_total_input"]),
+            "question_total_output": _fmt(q_data["question_total_output"]),
+            "history_after_this_question": _fmt(history_after),
+            "history_after_breakdown": history_after_breakdown,
+        }
+        explanation["per_question_summary"].append(q_explanation)
+        running_history += history_per_question
+
+    result = {
+        "assumptions": {
+            "questions_per_agent_session": questions_per_agent_session,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "system_prompt_tokens": system_prompt_tokens,
+            "tools_passed_to_agent": tools_passed_to_agent,
+            "tool_spec_tokens": tool_spec_tokens,
+            "tools_invoked": tools_invoked,
+            "tool_call_tokens": tool_call_tokens,
+            "tool_result_tokens": tool_result_tokens_list,
+            "history_mode": history_mode,
+            "tool_desc_tokens": tool_desc_tokens,
+            "fixed_per_call": fixed_per_call,
+            "delta_per_tool": delta_per_tool,
+            "total_delta": total_delta,
+            "cycles_per_question": cycles_per_question,
+            "history_per_question": history_per_question,
+        },
+        "session": session,
+        "session_total_input": session_total_input,
+        "session_total_output": session_total_output,
+        "session_total_tokens": session_total_input + session_total_output,
+        "explanation": explanation,
+    }
+
+    if detail_level == "summary":
+        return {
+            "assumptions": result["assumptions"],
+            "session_total_input": result["session_total_input"],
+            "session_total_output": result["session_total_output"],
+            "session_total_tokens": result["session_total_tokens"],
+        }
+    return result
+
+
+def calculate_rag_subagent_tokens(
+    system_prompt_tokens=500,
+    n_tools=2,
+    tool_spec_tokens=100,
+    input_query_tokens=100,
+    tool_call_tokens=50,
+    rag_n_retrieval_calls=2,
+    rag_n_chunks=10,
+    rag_chunk_size=300,
+    n_other_tool_calls=1,
+    other_tool_result_tokens=200,
+    output_tokens=300,
+    detail_level="summary",  # "summary" or "full"
+):
+    """Calculate token usage for a single RAG sub-agent invocation.
+
+    Models a RAG sub-agent that:
+    1. Receives a query from the main agent (input_query_tokens)
+    2. Calls KB retrieval tool one or more times (each returning rag_n_chunks × rag_chunk_size tokens)
+    3. Optionally calls other tools (reranker, etc.)
+    4. Produces a synthesized response (output_tokens) sent back to the main agent
+
+    The sub-agent is stateless — every model call sends system_prompt + tool_specs + full
+    accumulated history. Token compounding applies within this invocation.
+
+    Tool call order: all retrieval calls first, then all other tool calls, then final answer.
+    # NOTE: Interleaved tool call order (retrieve → rerank → retrieve → rerank) could be
+    # added later if needed. For now, sequential grouping is assumed.
+
+    # NOTE: Prompt caching is NOT modeled for this sub-agent. The sub-agent's
+    # system_prompt + tool_specs (~600-700 tokens) is typically below the minimum
+    # cache threshold for most models (4,096 for Haiku 4.5, 2,048 for Sonnet 4.6).
+    # The tool exchange history does cross the threshold mid-invocation, but the
+    # savings are marginal on cheap models (Haiku at $1/M). The real cost savings
+    # come from the architecture decision (isolating RAG in a sub-agent to avoid
+    # compounding in the main agent). May revisit caching here in the future if
+    # sub-agent system prompts grow large (4K+ tokens).
+
+    Args:
+        system_prompt_tokens (int): Sub-agent system prompt (default 500).
+        n_tools (int): Number of tools available to sub-agent (default 2).
+        tool_spec_tokens (int): Tokens per tool specification (default 100).
+        input_query_tokens (int): Query from main agent — the input prompt to this
+            sub-agent (default 100).
+        tool_call_tokens (int): Model output per tool invocation JSON (default 50).
+        rag_n_retrieval_calls (int): Number of KB retrieval calls (default 2).
+        rag_n_chunks (int): Number of chunks returned per retrieval call (default 10).
+        rag_chunk_size (int): Tokens per RAG chunk (default 300).
+        n_other_tool_calls (int): Other tool invocations — reranker, etc. (default 1).
+        other_tool_result_tokens (int): Result size for non-retrieval tools (default 200).
+        output_tokens (int): Final synthesized response tokens (default 300).
+            This is what the main agent receives as tool_result.
+
+    Returns:
+        dict: cycles (list of per-model-call details), total_input, total_output,
+            output_tokens_to_main_agent, assumptions, explanation.
+    """
+    # Input validation
+    if rag_n_retrieval_calls < 0:
+        raise ValueError(f"rag_n_retrieval_calls must be >= 0, got {rag_n_retrieval_calls}")
+    if n_other_tool_calls < 0:
+        raise ValueError(f"n_other_tool_calls must be >= 0, got {n_other_tool_calls}")
+    if rag_n_retrieval_calls == 0 and n_other_tool_calls == 0 and output_tokens == 0:
+        raise ValueError("At least one of rag_n_retrieval_calls, n_other_tool_calls, or output_tokens must be > 0")
+
+    # Derived constants
+    tool_desc_tokens = n_tools * tool_spec_tokens
+    fixed_per_call = system_prompt_tokens + tool_desc_tokens  # sent every model call
+    retrieval_result_tokens = rag_n_chunks * rag_chunk_size  # tokens returned per KB retrieval
+    total_tool_calls = rag_n_retrieval_calls + n_other_tool_calls
+    total_cycles = total_tool_calls + 1  # tool calls + final answer
+
+    # Build cycle-by-cycle breakdown
+    cycles = []
+    accumulated_context = 0  # tool exchanges accumulated so far
+
+    for c in range(1, total_cycles + 1):
+        # Input = fixed + query + all prior tool exchanges
+        cycle_input = fixed_per_call + input_query_tokens + accumulated_context
+
+        if c <= rag_n_retrieval_calls:
+            # This is a retrieval call
+            cycle_output = tool_call_tokens
+            cycle_type = "tool_use (retrieval)"
+            result_tokens = retrieval_result_tokens
+        elif c <= total_tool_calls:
+            # This is an "other" tool call (reranker, etc.)
+            cycle_output = tool_call_tokens
+            cycle_type = "tool_use (other)"
+            result_tokens = other_tool_result_tokens
+        else:
+            # Final answer
+            cycle_output = output_tokens
+            cycle_type = "end_turn"
+            result_tokens = 0
+
+        cycle_data = {
+            "cycle": c,
+            "input_tokens": cycle_input,
+            "output_tokens": cycle_output,
+            "type": cycle_type,
+        }
+
+        # Add breakdown for first cycle
+        if c == 1:
+            cycle_data["breakdown"] = (
+                f"system_prompt({_fmt(system_prompt_tokens)}) + "
+                f"tool_specs({_fmt(tool_desc_tokens)}) + "
+                f"input_query({_fmt(input_query_tokens)}) = "
+                f"{_fmt(cycle_input)}"
+            )
+
+        cycles.append(cycle_data)
+
+        # Accumulate context for next cycle (tool_call output + tool_result)
+        if c <= total_tool_calls:
+            accumulated_context += tool_call_tokens + result_tokens
+
+    total_input = sum(cyc["input_tokens"] for cyc in cycles)
+    total_output = sum(cyc["output_tokens"] for cyc in cycles)
+
+    # Build explanation
+    explanation = {
+        "derived_constants": {
+            "tool_desc_tokens": f"{n_tools} tools × {tool_spec_tokens} tokens = {_fmt(tool_desc_tokens)}",
+            "fixed_per_call": f"system_prompt({_fmt(system_prompt_tokens)}) + tool_specs({_fmt(tool_desc_tokens)}) = {_fmt(fixed_per_call)}",
+            "retrieval_result_tokens": f"{rag_n_chunks} chunks × {rag_chunk_size} tokens = {_fmt(retrieval_result_tokens)} per retrieval call",
+            "total_tool_calls": f"{rag_n_retrieval_calls} retrieval + {n_other_tool_calls} other = {total_tool_calls}",
+            "total_model_calls": f"{total_tool_calls} tool calls + 1 final = {total_cycles}",
+        },
+        "compounding_detail": (
+            f"Each retrieval adds {_fmt(tool_call_tokens)} (call) + {_fmt(retrieval_result_tokens)} (result) = "
+            f"{_fmt(tool_call_tokens + retrieval_result_tokens)} tokens to context. "
+            f"Each other tool adds {_fmt(tool_call_tokens)} + {_fmt(other_tool_result_tokens)} = "
+            f"{_fmt(tool_call_tokens + other_tool_result_tokens)} tokens."
+        ),
+        "summary": {
+            "total_input_tokens": _fmt(total_input),
+            "total_output_tokens": _fmt(total_output),
+            "total_tokens": _fmt(total_input + total_output),
+            "output_to_main_agent": f"{_fmt(output_tokens)} tokens (this becomes tool_result in the main agent)",
+        },
+    }
+
+    result = {
+        "assumptions": {
+            "system_prompt_tokens": system_prompt_tokens,
+            "n_tools": n_tools,
+            "tool_spec_tokens": tool_spec_tokens,
+            "input_query_tokens": input_query_tokens,
+            "tool_call_tokens": tool_call_tokens,
+            "rag_n_retrieval_calls": rag_n_retrieval_calls,
+            "rag_n_chunks": rag_n_chunks,
+            "rag_chunk_size": rag_chunk_size,
+            "retrieval_result_tokens": retrieval_result_tokens,
+            "n_other_tool_calls": n_other_tool_calls,
+            "other_tool_result_tokens": other_tool_result_tokens,
+            "output_tokens": output_tokens,
+            "tool_desc_tokens": tool_desc_tokens,
+            "fixed_per_call": fixed_per_call,
+            "total_tool_calls": total_tool_calls,
+            "total_cycles": total_cycles,
+        },
+        "cycles": cycles,
+        "total_input": total_input,
+        "total_output": total_output,
+        "total_tokens": total_input + total_output,
+        "output_tokens_to_main_agent": output_tokens,
+        "explanation": explanation,
+    }
+
+    if detail_level == "summary":
+        return {
+            "assumptions": result["assumptions"],
+            "total_input": result["total_input"],
+            "total_output": result["total_output"],
+            "total_tokens": result["total_tokens"],
+            "output_tokens_to_main_agent": result["output_tokens_to_main_agent"],
+        }
+    return result
+
+
+def calculate_research_subagent_tokens(
+    system_prompt_tokens=500,
+    n_tools=2,
+    tool_spec_tokens=50,
+    input_query_tokens=100,
+    tool_call_tokens=50,
+    n_research_iterations=4,
+    fetch_probability=0.5,
+    search_result_tokens=100,
+    fetch_result_tokens=2000,
+    output_tokens=1000,
+    detail_level="summary",  # "summary" or "full"
+):
+    """Calculate token usage for a single internet research sub-agent invocation.
+
+    Models a research sub-agent that iteratively searches and fetches web content:
+    1. Each iteration: model calls web_search → gets snippets
+    2. With probability fetch_probability: model also calls web_fetch → gets full page
+    3. After all iterations: model synthesizes a final response
+
+    The pattern is interleaved (search → optional fetch → search → optional fetch → ...)
+    based on how real research agents behave (see internet-research-agent-patterns.md).
+
+    The model is stateless — every call sends system_prompt + tool_specs + full
+    accumulated history. Token compounding applies within this invocation.
+
+    # NOTE: Prompt caching is NOT modeled for this sub-agent. The sub-agent's
+    # system_prompt + tool_specs (~600 tokens) is below the minimum cache threshold
+    # for most models (4,096 for Haiku 4.5, 2,048 for Sonnet 4.6). The accumulated
+    # search/fetch history does cross the threshold after 2-3 iterations, but the
+    # savings are marginal on cheap models (Haiku at $1/M). The real cost savings
+    # come from isolating research in a sub-agent so the main agent doesn't carry
+    # 50K+ tokens of web content in its history. May revisit caching here in the
+    # future if sub-agent system prompts grow large (4K+ tokens).
+
+    Args:
+        system_prompt_tokens (int): Sub-agent system prompt (default 500).
+        n_tools (int): Number of tools available — search, fetch (default 2).
+        tool_spec_tokens (int): Tokens per tool specification (default 50).
+        input_query_tokens (int): Query from main agent — the input prompt to this
+            sub-agent (default 100).
+        tool_call_tokens (int): Model output per tool invocation JSON (default 50).
+        n_research_iterations (int): Number of search→(optional fetch) pairs (default 4).
+        fetch_probability (float): Probability that a search leads to a fetch, 0.0-1.0 (default 0.5).
+        search_result_tokens (int): Tokens returned by web_search (default 100).
+        fetch_result_tokens (int): Tokens returned by web_fetch (default 2000).
+        output_tokens (int): Final synthesized response tokens (default 1000).
+            This is what the main agent receives as tool_result.
+
+    Returns:
+        dict: cycles (list of per-model-call details), total_input, total_output,
+            output_tokens_to_main_agent, assumptions, explanation.
+    """
+    # Input validation
+    if n_research_iterations < 0:
+        raise ValueError(f"n_research_iterations must be >= 0, got {n_research_iterations}")
+    if not (0.0 <= fetch_probability <= 1.0):
+        raise ValueError(f"fetch_probability must be between 0.0 and 1.0, got {fetch_probability}")
+    if n_research_iterations == 0 and output_tokens == 0:
+        raise ValueError("At least one of n_research_iterations or output_tokens must be > 0")
+
+    # Derived constants
+    tool_desc_tokens = n_tools * tool_spec_tokens
+    fixed_per_call = system_prompt_tokens + tool_desc_tokens  # sent every model call
+    n_fetches = round(n_research_iterations * fetch_probability)
+
+    # Total model calls = n_research_iterations (searches) + n_fetches (fetches) + 1 (final answer)
+    total_tool_calls = n_research_iterations + n_fetches
+    total_cycles = total_tool_calls + 1
+
+    # Determine which iterations include a fetch.
+    # Distribute fetches across the first n_fetches iterations (most realistic:
+    # early iterations are more likely to need full content).
+    iterations_with_fetch = set(range(1, n_fetches + 1))
+
+    # Build cycle-by-cycle breakdown
+    cycles = []
+    accumulated_context = 0  # tool exchanges accumulated so far
+    current_iteration = 0
+
+    for iteration in range(1, n_research_iterations + 1):
+        current_iteration = iteration
+        has_fetch = iteration in iterations_with_fetch
+
+        # --- Search call ---
+        cycle_input = fixed_per_call + input_query_tokens + accumulated_context
+        cycle_num = len(cycles) + 1
+
+        cycle_data = {
+            "cycle": cycle_num,
+            "input_tokens": cycle_input,
+            "output_tokens": tool_call_tokens,
+            "type": "tool_use (search)",
+            "iteration": iteration,
+        }
+        if cycle_num == 1:
+            cycle_data["breakdown"] = (
+                f"system_prompt({_fmt(system_prompt_tokens)}) + "
+                f"tool_specs({_fmt(tool_desc_tokens)}) + "
+                f"input_query({_fmt(input_query_tokens)}) = "
+                f"{_fmt(cycle_input)}"
+            )
+        cycles.append(cycle_data)
+
+        # Accumulate: search tool_call output + search result
+        accumulated_context += tool_call_tokens + search_result_tokens
+
+        # --- Fetch call (if this iteration has one) ---
+        if has_fetch:
+            cycle_input = fixed_per_call + input_query_tokens + accumulated_context
+            cycle_num = len(cycles) + 1
+
+            cycles.append({
+                "cycle": cycle_num,
+                "input_tokens": cycle_input,
+                "output_tokens": tool_call_tokens,
+                "type": "tool_use (fetch)",
+                "iteration": iteration,
+            })
+
+            # Accumulate: fetch tool_call output + fetch result
+            accumulated_context += tool_call_tokens + fetch_result_tokens
+
+    # --- Final answer ---
+    cycle_input = fixed_per_call + input_query_tokens + accumulated_context
+    cycle_num = len(cycles) + 1
+
+    cycles.append({
+        "cycle": cycle_num,
+        "input_tokens": cycle_input,
+        "output_tokens": output_tokens,
+        "type": "end_turn",
+        "iteration": None,
+    })
+
+    total_input = sum(cyc["input_tokens"] for cyc in cycles)
+    total_output = sum(cyc["output_tokens"] for cyc in cycles)
+
+    # Build explanation
+    explanation = {
+        "derived_constants": {
+            "tool_desc_tokens": f"{n_tools} tools × {tool_spec_tokens} tokens = {_fmt(tool_desc_tokens)}",
+            "fixed_per_call": f"system_prompt({_fmt(system_prompt_tokens)}) + tool_specs({_fmt(tool_desc_tokens)}) = {_fmt(fixed_per_call)}",
+            "n_fetches": f"round({n_research_iterations} iterations × {fetch_probability} probability) = {n_fetches} fetches",
+            "total_tool_calls": f"{n_research_iterations} searches + {n_fetches} fetches = {total_tool_calls}",
+            "total_model_calls": f"{total_tool_calls} tool calls + 1 final = {total_cycles}",
+        },
+        "compounding_detail": (
+            f"Each search adds {_fmt(tool_call_tokens)} (call) + {_fmt(search_result_tokens)} (result) = "
+            f"{_fmt(tool_call_tokens + search_result_tokens)} tokens to context. "
+            f"Each fetch adds {_fmt(tool_call_tokens)} (call) + {_fmt(fetch_result_tokens)} (result) = "
+            f"{_fmt(tool_call_tokens + fetch_result_tokens)} tokens to context."
+        ),
+        "pattern": (
+            f"Interleaved: {n_research_iterations} iterations, "
+            f"{n_fetches} include fetch (iterations {sorted(iterations_with_fetch) if iterations_with_fetch else 'none'}). "
+            f"Iterations without fetch: search snippet was sufficient."
+        ),
+        "summary": {
+            "total_input_tokens": _fmt(total_input),
+            "total_output_tokens": _fmt(total_output),
+            "total_tokens": _fmt(total_input + total_output),
+            "output_to_main_agent": f"{_fmt(output_tokens)} tokens (this becomes tool_result in the main agent)",
+        },
+    }
+
+    result = {
+        "assumptions": {
+            "system_prompt_tokens": system_prompt_tokens,
+            "n_tools": n_tools,
+            "tool_spec_tokens": tool_spec_tokens,
+            "input_query_tokens": input_query_tokens,
+            "tool_call_tokens": tool_call_tokens,
+            "n_research_iterations": n_research_iterations,
+            "fetch_probability": fetch_probability,
+            "n_fetches": n_fetches,
+            "search_result_tokens": search_result_tokens,
+            "fetch_result_tokens": fetch_result_tokens,
+            "output_tokens": output_tokens,
+            "tool_desc_tokens": tool_desc_tokens,
+            "fixed_per_call": fixed_per_call,
+            "total_tool_calls": total_tool_calls,
+            "total_cycles": total_cycles,
+        },
+        "cycles": cycles,
+        "total_input": total_input,
+        "total_output": total_output,
+        "total_tokens": total_input + total_output,
+        "output_tokens_to_main_agent": output_tokens,
+        "explanation": explanation,
+    }
+
+    if detail_level == "summary":
+        return {
+            "assumptions": result["assumptions"],
+            "total_input": result["total_input"],
+            "total_output": result["total_output"],
+            "total_tokens": result["total_tokens"],
+            "output_tokens_to_main_agent": result["output_tokens_to_main_agent"],
+        }
+    return result
+
+
+def calculate_subagent_cost(
+    token_result,
+    input_price,
+    output_price,
+):
+    """Calculate cost for a sub-agent invocation (RAG or research).
+
+    Simple cost calculation: total_input × input_price + total_output × output_price.
+    No prompt caching is applied (see notes in sub-agent token functions for rationale).
+
+    Works with the output of either calculate_rag_subagent_tokens() or
+    calculate_research_subagent_tokens().
+
+    Args:
+        token_result (dict): Output from calculate_rag_subagent_tokens() or
+            calculate_research_subagent_tokens(). Must contain 'total_input' and
+            'total_output' keys.
+        input_price (float): Input token price $/M for the sub-agent's model (REQUIRED).
+        output_price (float): Output token price $/M for the sub-agent's model (REQUIRED).
+
+    Returns:
+        dict: input_cost, output_cost, total_cost, per_cycle_costs,
+            output_tokens_to_main_agent, explanation.
+    """
+    total_input = token_result["total_input"]
+    total_output = token_result["total_output"]
+
+    input_cost = (total_input / 1_000_000) * input_price
+    output_cost = (total_output / 1_000_000) * output_price
+    total_cost = input_cost + output_cost
+
+    # Per-cycle cost breakdown
+    per_cycle_costs = []
+    for cyc in token_result["cycles"]:
+        cyc_input_cost = (cyc["input_tokens"] / 1_000_000) * input_price
+        cyc_output_cost = (cyc["output_tokens"] / 1_000_000) * output_price
+        per_cycle_costs.append({
+            "cycle": cyc["cycle"],
+            "input_tokens": cyc["input_tokens"],
+            "output_tokens": cyc["output_tokens"],
+            "input_cost": cyc_input_cost,
+            "output_cost": cyc_output_cost,
+            "cycle_cost": cyc_input_cost + cyc_output_cost,
+            "type": cyc["type"],
+        })
+
+    explanation = {
+        "pricing": {
+            "input_price": f"${input_price}/M tokens",
+            "output_price": f"${output_price}/M tokens",
+            "caching": "Not applied (sub-agent prefix below minimum cache threshold)",
+        },
+        "cost_breakdown": {
+            "input": f"{_fmt(total_input)} tokens × ${input_price}/M = ${input_cost:.6f}",
+            "output": f"{_fmt(total_output)} tokens × ${output_price}/M = ${output_cost:.6f}",
+            "total": f"${input_cost:.6f} + ${output_cost:.6f} = ${total_cost:.6f}",
+        },
+        "output_to_main_agent": f"{_fmt(token_result['output_tokens_to_main_agent'])} tokens (becomes tool_result in main agent)",
+    }
+
+    return {
+        "input_cost": input_cost,
+        "output_cost": output_cost,
+        "total_cost": total_cost,
+        "per_cycle_costs": per_cycle_costs,
+        "output_tokens_to_main_agent": token_result["output_tokens_to_main_agent"],
+        "explanation": explanation,
+    }
+
+
+def calculate_main_agent_compounded_cost(
+    # Pricing parameters (REQUIRED — no defaults)
+    input_price,
+    output_price,
+    cache_read_price,       # None = model doesn't support caching
+    cache_write_price,      # None = model doesn't support caching
+    agent_sessions_per_month,
+    # Token parameters (passed to calculate_compounded_tokens_for_agent)
+    questions_per_agent_session=5,
+    input_tokens=100,
+    output_tokens=150,
+    system_prompt_tokens=2000,
+    tools_passed_to_agent=10,
+    tool_spec_tokens=100,
+    tools_invoked=5,
+    tool_call_tokens=100,
+    tool_result_tokens=100,
+    history_mode="full",
+    # Volume & TTL parameters
+    days_per_month=30,
+    usage_hours_per_day=12,
+    # Caching strategy
+    cache_history_checkpoints=3,
+    # Output detail level
+    detail_level="summary",  # "summary" or "full"
+):
+    """Calculate compounded token costs for the MAIN AGENT ONLY, with and without prompt caching.
+
+    This function models the cost of a single (main/orchestrator) agent in isolation.
+    It does NOT account for sub-agent costs (RAG, research, etc.) or the impact of
+    sub-agent outputs on the main agent's context size. For a complete multi-agent
+    system cost that includes sub-agents, use calculate_agent_session_compounded_cost.
+
+    Takes the same token parameters as calculate_compounded_tokens_for_agent, plus
+    pricing and volume parameters. Computes costs with prompt caching (if supported)
+    and without, showing savings.
+
+    Caching strategy:
+    - Checkpoint 1 (always): system_prompt + tool_specs (the fixed prefix)
+    - Checkpoints 2-4: conversation history after Q1, Q2, Q3
+      (max 3 history checkpoints because checkpoint 1 is reserved for system+tools,
+       and the Bedrock API allows max 4 checkpoints total per request)
+
+    TTL selection:
+    - Automatically determines 5-min vs 1-hour TTL based on session volume.
+    - If avg gap between sessions > 5 min but <= 60 min → 1-hour TTL recommended.
+    - Otherwise → 5-min TTL (cheaper write cost, cache stays warm within session).
+
+    Args:
+        input_price (float): Input token price $/M (REQUIRED).
+        output_price (float): Output token price $/M (REQUIRED).
+        cache_read_price (float|None): Cache read $/M (REQUIRED). None = no caching support.
+        cache_write_price (float|None): Cache write $/M (REQUIRED). None = no caching support.
+        agent_sessions_per_month (int): Monthly session volume (REQUIRED).
+        questions_per_agent_session (int): Questions per session (default 5).
+        input_tokens (int): User question tokens (default 100).
+        output_tokens (int): Final answer tokens (default 150).
+        system_prompt_tokens (int): System prompt tokens (default 2000).
+        tools_passed_to_agent (int): Tools in schema (default 10).
+        tool_spec_tokens (int): Tokens per tool spec (default 100).
+        tools_invoked (int): Tool calls per question (default 5).
+        tool_call_tokens (int): Model output per tool call (default 100).
+        tool_result_tokens (int): Tool response tokens (default 100).
+        history_mode (str): "full" or "condensed" (default "full").
+        days_per_month (int): Days per month (default 30).
+        usage_hours_per_day (int): Active hours per day (default 12).
+        cache_history_checkpoints (int): History checkpoints to use, 0-3 (default 3).
+
+    Returns:
+        dict: token_result, no_cache_cost, with_cache_cost (if supported),
+            savings, ttl_recommendation, checkpoint_analysis, monthly costs,
+            explanation.
+    """
+    # Validate cache_history_checkpoints
+    # Max 3 because: Bedrock allows 4 checkpoints total per request.
+    # Checkpoint 1 is always reserved for system_prompt + tool_specs.
+    # That leaves at most 3 for conversation history.
+    if cache_history_checkpoints < 0 or cache_history_checkpoints > 3:
+        raise ValueError(
+            f"cache_history_checkpoints must be 0-3 (max 4 checkpoints per request, "
+            f"1 reserved for system+tools), got {cache_history_checkpoints}"
+        )
+
+    if days_per_month <= 0:
+        raise ValueError(f"days_per_month must be > 0, got {days_per_month}")
+    if usage_hours_per_day <= 0:
+        raise ValueError(f"usage_hours_per_day must be > 0, got {usage_hours_per_day}")
+
+    # NOTE: We do not currently check whether fixed_per_call meets the model's
+    # minimum token threshold for caching (e.g., 4096 for Sonnet 4.5).
+    # If below threshold, caching silently fails — no error, just no benefit.
+    # TODO: Revisit this later — add min_cache_tokens parameter and warn.
+
+    # Determine if caching is supported
+    caching_supported = cache_read_price is not None and cache_write_price is not None
+
+    # Get token breakdown from the token function
+    token_result = calculate_compounded_tokens_for_agent(
+        questions_per_agent_session=questions_per_agent_session,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        system_prompt_tokens=system_prompt_tokens,
+        tools_passed_to_agent=tools_passed_to_agent,
+        tool_spec_tokens=tool_spec_tokens,
+        tools_invoked=tools_invoked,
+        tool_call_tokens=tool_call_tokens,
+        tool_result_tokens=tool_result_tokens,
+        history_mode=history_mode,
+        detail_level="full",  # always need full detail internally
+    )
+
+    # Extract key values from token result
+    fixed_per_call = token_result["assumptions"]["fixed_per_call"]
+    history_per_question = token_result["assumptions"]["history_per_question"]
+    cycles_per_question = token_result["assumptions"]["cycles_per_question"]
+
+    # ── Determine TTL ──
+    sessions_per_hour = agent_sessions_per_month / (days_per_month * usage_hours_per_day)
+    avg_gap_minutes = 60.0 / sessions_per_hour if sessions_per_hour > 0 else float("inf")
+
+    if avg_gap_minutes > 5 and avg_gap_minutes <= 60:
+        recommended_ttl = "1hour"
+        cache_write_multiplier = 2.0  # 1-hour TTL write cost = 2× input price
+        ttl_reason = (
+            f"Avg gap between sessions = {avg_gap_minutes:.1f} min (> 5 min). "
+            f"5-min cache would expire between sessions. 1-hour TTL keeps cache warm "
+            f"across sessions at {sessions_per_hour:.1f} sessions/hour."
+        )
+    elif avg_gap_minutes > 60:
+        recommended_ttl = "5min"
+        cache_write_multiplier = 1.25  # 5-min TTL write cost = 1.25× input price
+        ttl_reason = (
+            f"Avg gap between sessions = {avg_gap_minutes:.1f} min (> 60 min). "
+            f"Even 1-hour cache would expire between sessions. Using 5-min TTL "
+            f"(cheaper write cost) — caching only benefits within-session."
+        )
+    else:
+        recommended_ttl = "5min"
+        cache_write_multiplier = 1.25
+        ttl_reason = (
+            f"Avg gap between sessions = {avg_gap_minutes:.1f} min (≤ 5 min). "
+            f"5-min cache stays warm between sessions. No need for expensive 1-hour TTL."
+        )
+
+    # ── Calculate NO-CACHE cost (baseline) ──
+    no_cache_session_input_cost = (token_result["session_total_input"] / 1_000_000) * input_price
+    no_cache_session_output_cost = (token_result["session_total_output"] / 1_000_000) * output_price
+    no_cache_session_total = no_cache_session_input_cost + no_cache_session_output_cost
+    no_cache_monthly = no_cache_session_total * agent_sessions_per_month
+
+    # If caching not supported, return early with just no-cache costs
+    if not caching_supported:
+        no_cache_result = {
+            "token_result": token_result,
+            "caching_supported": False,
+            "no_cache": {
+                "session_input_cost": no_cache_session_input_cost,
+                "session_output_cost": no_cache_session_output_cost,
+                "session_total": no_cache_session_total,
+                "monthly_total": no_cache_monthly,
+                "annual_total": no_cache_monthly * 12,
+            },
+            "with_cache": None,
+            "savings": None,
+            "explanation": {
+                "note": "Model does not support prompt caching (cache_read_price and/or cache_write_price is None).",
+                "no_cache_breakdown": f"Input: {_fmt(token_result['session_total_input'])} tokens × ${input_price}/M = ${no_cache_session_input_cost:.4f}, "
+                    f"Output: {_fmt(token_result['session_total_output'])} tokens × ${output_price}/M = ${no_cache_session_output_cost:.4f}",
+            },
+        }
+        if detail_level == "summary":
+            return {
+                "caching_supported": False,
+                "no_cache": no_cache_result["no_cache"],
+                "with_cache": None,
+                "savings": None,
+                "token_result": {
+                    "assumptions": token_result["assumptions"],
+                    "session_total_input": token_result["session_total_input"],
+                    "session_total_output": token_result["session_total_output"],
+                },
+            }
+        return no_cache_result
+
+    # ── Calculate WITH-CACHE cost ──
+    # Determine which questions have history checkpoints
+    # Checkpoint after Q_n means: all cycles in Q_{n+1}, Q_{n+2}, ... can read Q_n's history from cache
+    history_checkpoint_after_questions = list(range(1, min(cache_history_checkpoints + 1, questions_per_agent_session)))
+
+    # Build per-cycle cost breakdown
+    cached_session_cost = 0.0
+    per_question_costs = []
+    accumulated_history = 0
+    # Track which history is cached (cumulative tokens cached at each checkpoint)
+    cached_history_tokens = 0  # how much of the accumulated history is in cache
+
+    # Checkpoint break-even analysis
+    checkpoint_analysis = []
+
+    for q_idx, q_data in enumerate(token_result["session"]):
+        q_num = q_idx + 1
+        question_cost = 0.0
+        cycle_costs = []
+
+        for cyc in q_data["cycles"]:
+            cycle_input = cyc["input_tokens"]
+            cycle_output = cyc["output_tokens"]
+
+            # Split input into: cached_prefix + cached_history + dynamic
+            # cached_prefix = fixed_per_call (system + tools) — always checkpoint 1
+            # cached_history = portion of accumulated history that has a checkpoint
+            # dynamic = everything else (current question's user input + tool exchanges + uncached history)
+
+            cached_prefix = fixed_per_call
+            cached_history = cached_history_tokens
+            dynamic = cycle_input - cached_prefix - cached_history
+
+            # Determine billing for this cycle
+            is_first_cycle_of_session = (q_num == 1 and cyc["cycle"] == 1)
+            # History checkpoint write happens on first cycle of the question AFTER the checkpoint was placed
+            is_first_cycle_of_question = (cyc["cycle"] == 1)
+            # Did we just get a new history checkpoint from the previous question?
+            new_history_checkpoint_this_q = (q_num - 1) in history_checkpoint_after_questions and is_first_cycle_of_question
+            new_history_tokens = history_per_question if new_history_checkpoint_this_q else 0
+
+            if is_first_cycle_of_session:
+                # Very first call: write system+tools to cache
+                # But only if there will be subsequent reads to benefit from it
+                total_remaining_cycles = (questions_per_agent_session * cycles_per_question) - 1
+                if total_remaining_cycles > 0:
+                    prefix_cost = (cached_prefix / 1_000_000) * cache_write_price
+                    cache_action = "prefix_write"
+                else:
+                    # Single call in entire session — no benefit from caching
+                    prefix_cost = (cached_prefix / 1_000_000) * input_price
+                    cache_action = "no_cache (single call)"
+                history_cost = 0.0  # no history yet
+                dynamic_cost = (dynamic / 1_000_000) * input_price
+            elif new_history_checkpoint_this_q and new_history_tokens > 0:
+                # First cycle of a question where we write a new history checkpoint
+                prefix_cost = (cached_prefix / 1_000_000) * cache_read_price
+                # Previously cached history is read, new history portion is written
+                old_cached = cached_history - new_history_tokens
+                if old_cached > 0:
+                    history_cost = (old_cached / 1_000_000) * cache_read_price + \
+                                   (new_history_tokens / 1_000_000) * cache_write_price
+                else:
+                    history_cost = (cached_history / 1_000_000) * cache_write_price
+                dynamic_cost = (dynamic / 1_000_000) * input_price
+                cache_action = "prefix_read+history_write"
+            else:
+                # Normal cycle: read prefix + read cached history + pay regular for dynamic
+                prefix_cost = (cached_prefix / 1_000_000) * cache_read_price
+                history_cost = (cached_history / 1_000_000) * cache_read_price
+                dynamic_cost = (dynamic / 1_000_000) * input_price
+                cache_action = "prefix_read" + ("+history_read" if cached_history > 0 else "")
+
+            output_cost = (cycle_output / 1_000_000) * output_price
+            cycle_total = prefix_cost + history_cost + dynamic_cost + output_cost
+
+            cycle_costs.append({
+                "cycle": cyc["cycle"],
+                "input_tokens": cycle_input,
+                "output_tokens": cycle_output,
+                "cached_prefix_tokens": cached_prefix,
+                "cached_history_tokens": cached_history,
+                "dynamic_tokens": dynamic,
+                "prefix_cost": prefix_cost,
+                "history_cost": history_cost,
+                "dynamic_cost": dynamic_cost,
+                "output_cost": output_cost,
+                "cycle_total": cycle_total,
+                "cache_action": cache_action,
+            })
+
+            question_cost += cycle_total
+
+        per_question_costs.append({
+            "question": q_num,
+            "cycles": cycle_costs,
+            "question_total": question_cost,
+        })
+        cached_session_cost += question_cost
+
+        # After this question, update cached history if a checkpoint was placed
+        accumulated_history += history_per_question
+        if q_num in history_checkpoint_after_questions:
+            cached_history_tokens = accumulated_history
+
+    # ── Checkpoint break-even analysis ──
+    for cp_q in history_checkpoint_after_questions:
+        # Tokens written at this checkpoint
+        write_tokens = history_per_question
+        write_cost = (write_tokens / 1_000_000) * cache_write_price
+
+        # Benefit: all subsequent cycles read these tokens at cache_read_price instead of input_price
+        remaining_questions = questions_per_agent_session - cp_q
+        total_reads = remaining_questions * cycles_per_question
+        savings_per_read = (write_tokens / 1_000_000) * (input_price - cache_read_price)
+        total_savings = total_reads * savings_per_read
+
+        net_benefit = total_savings - write_cost
+        is_worth_it = net_benefit > 0
+
+        checkpoint_analysis.append({
+            "checkpoint_after_question": cp_q,
+            "tokens_cached": write_tokens,
+            "write_cost": write_cost,
+            "subsequent_reads": total_reads,
+            "savings_per_read": savings_per_read,
+            "total_savings": total_savings,
+            "net_benefit": net_benefit,
+            "worth_it": is_worth_it,
+            "reasoning": (
+                f"Write {_fmt(write_tokens)} tokens at ${cache_write_price}/M = ${write_cost:.6f}. "
+                f"Then {total_reads} reads save ${savings_per_read:.6f} each = ${total_savings:.6f}. "
+                f"Net: ${net_benefit:.6f} ({'✅ worth it' if is_worth_it else '❌ not worth it'})"
+            ),
+        })
+
+    # ── Session and monthly totals ──
+    cached_session_output_cost = (token_result["session_total_output"] / 1_000_000) * output_price
+    cached_monthly = cached_session_cost * agent_sessions_per_month
+
+    savings_session = no_cache_session_total - cached_session_cost
+    savings_pct = (savings_session / no_cache_session_total * 100) if no_cache_session_total > 0 else 0
+    savings_monthly = no_cache_monthly - cached_monthly
+
+    # ── Build explanation ──
+    explanation = {
+        "ttl_recommendation": {
+            "recommended": recommended_ttl,
+            "write_multiplier": f"{cache_write_multiplier}× input price",
+            "sessions_per_hour": f"{sessions_per_hour:.2f}",
+            "avg_gap_minutes": f"{avg_gap_minutes:.1f}",
+            "reason": ttl_reason,
+        },
+        "caching_strategy": {
+            "checkpoint_1": f"system_prompt({_fmt(system_prompt_tokens)}) + tool_specs({_fmt(tools_passed_to_agent * tool_spec_tokens)}) = {_fmt(fixed_per_call)} tokens",
+            "history_checkpoints": f"{len(history_checkpoint_after_questions)} checkpoints after questions: {history_checkpoint_after_questions}",
+            "max_checkpoints_note": "Max 3 history checkpoints (Bedrock allows 4 total, 1 reserved for system+tools)",
+        },
+        "cost_comparison": {
+            "no_cache_per_session": f"${no_cache_session_total:.4f}",
+            "with_cache_per_session": f"${cached_session_cost:.4f}",
+            "savings_per_session": f"${savings_session:.4f} ({savings_pct:.1f}%)",
+            "no_cache_monthly": f"${no_cache_monthly:,.2f}",
+            "with_cache_monthly": f"${cached_monthly:,.2f}",
+            "savings_monthly": f"${savings_monthly:,.2f}",
+        },
+        "checkpoint_analysis": checkpoint_analysis,
+    }
+
+    # Warnings for checkpoints that aren't worth it
+    warnings = []
+    for cp in checkpoint_analysis:
+        if not cp["worth_it"]:
+            warnings.append(
+                f"History checkpoint after Q{cp['checkpoint_after_question']} is not cost-effective "
+                f"(net loss: ${abs(cp['net_benefit']):.6f}). Consider reducing cache_history_checkpoints."
+            )
+
+    result = {
+        "token_result": token_result,
+        "caching_supported": True,
+        "recommended_ttl": recommended_ttl,
+        "no_cache": {
+            "session_input_cost": no_cache_session_input_cost,
+            "session_output_cost": no_cache_session_output_cost,
+            "session_total": no_cache_session_total,
+            "monthly_total": no_cache_monthly,
+            "annual_total": no_cache_monthly * 12,
+        },
+        "with_cache": {
+            "per_question": per_question_costs,
+            "session_total": cached_session_cost,
+            "monthly_total": cached_monthly,
+            "annual_total": cached_monthly * 12,
+        },
+        "savings": {
+            "session": savings_session,
+            "session_pct": savings_pct,
+            "monthly": savings_monthly,
+            "annual": savings_monthly * 12,
+        },
+        "warnings": warnings,
+        "explanation": explanation,
+    }
+
+    if detail_level == "summary":
+        return {
+            "caching_supported": True,
+            "recommended_ttl": recommended_ttl,
+            "no_cache": result["no_cache"],
+            "with_cache": {
+                "session_total": cached_session_cost,
+                "monthly_total": cached_monthly,
+                "annual_total": cached_monthly * 12,
+            },
+            "savings": result["savings"],
+            "token_result": {
+                "assumptions": token_result["assumptions"],
+                "session_total_input": token_result["session_total_input"],
+                "session_total_output": token_result["session_total_output"],
+            },
+        }
+    return result
+
+
+def calculate_agent_session_compounded_cost(
+    # Main agent configuration (REQUIRED)
+    main_agent_config,
+    # Sub-agent configurations (optional)
+    subagents=None,
+    # Output detail level
+    detail_level="summary",  # "summary" or "full"
+):
+    """Calculate total cost for an AI agent session including main agent and sub-agents.
+
+    Use this tool when a user asks about cost, price, spend, or budget for any
+    Bedrock agent workload — single agent or multi-agent. This is the primary
+    cost estimation function. It handles:
+    - Token compounding (context grows with each tool call and question)
+    - Prompt caching (automatic TTL selection, checkpoint break-even)
+    - Sub-agent costs (RAG, research) on potentially different/cheaper models
+    - How sub-agent outputs flow back into the main agent's context
+
+    If no sub-agents are provided, it calculates single-agent cost with caching.
+
+    Args:
+        main_agent_config (dict): Main agent configuration.
+            REQUIRED keys:
+                input_price (float): Input token price $/M tokens.
+                output_price (float): Output token price $/M tokens.
+                cache_read_price (float|None): Cache read $/M. None = no caching.
+                cache_write_price (float|None): Cache write $/M. None = no caching.
+                agent_sessions_per_month (int): Monthly session volume.
+            OPTIONAL keys (with defaults):
+                questions_per_agent_session (int): Questions per session. Default: 5.
+                input_tokens (int): User question tokens. Default: 100.
+                output_tokens (int): Agent final answer tokens. Default: 150.
+                system_prompt_tokens (int): System prompt size. Default: 2000.
+                tools_passed_to_agent (int): Tools in schema. Default: 10.
+                tool_spec_tokens (int): Tokens per tool spec. Default: 100.
+                tools_invoked (int): Tool calls per question. Default: 5.
+                    MUST be >= number of per-question sub-agents.
+                tool_call_tokens (int): Model output per tool call. Default: 100.
+                tool_result_tokens (int): Tokens per tool result. Default: 100.
+                history_mode (str): "full" or "condensed". Default: "full".
+                days_per_month (int): For TTL calculation. Default: 30.
+                usage_hours_per_day (int): Active hours/day. Default: 12.
+                cache_history_checkpoints (int): 0-3. Default: 3.
+
+        subagents (list|None): Optional list of sub-agent configs. Each dict:
+            "type" (str): "rag" or "research".
+            "token_params" (dict): Parameters for the sub-agent (see below).
+            "model_prices" (dict): {"input_price": float, "output_price": float}
+            "questions_invoked" (int):
+                0 = pre-session (output added to main agent system_prompt, cached).
+                1-N = invoked as tool in first N questions.
+
+            token_params for type="rag":
+                system_prompt_tokens (int): Default 500.
+                n_tools (int): Default 2.
+                tool_spec_tokens (int): Default 100.
+                input_query_tokens (int): Default 100.
+                tool_call_tokens (int): Default 50.
+                rag_n_retrieval_calls (int): KB retrieval calls. Default 2.
+                rag_n_chunks (int): Chunks per retrieval. Default 10.
+                rag_chunk_size (int): Tokens per chunk. Default 300.
+                n_other_tool_calls (int): Other tools (reranker). Default 1.
+                other_tool_result_tokens (int): Default 200.
+                output_tokens (int): Response to main agent. Default 300.
+
+            token_params for type="research":
+                system_prompt_tokens (int): Default 500.
+                n_tools (int): Default 2.
+                tool_spec_tokens (int): Default 50.
+                input_query_tokens (int): Default 100.
+                tool_call_tokens (int): Default 50.
+                n_research_iterations (int): Search cycles. Default 4.
+                fetch_probability (float): 0.0-1.0. Default 0.5.
+                search_result_tokens (int): Default 100.
+                fetch_result_tokens (int): Default 2000.
+                output_tokens (int): Response to main agent. Default 1000.
+
+        detail_level (str): "summary" (default) or "full".
+            Use "summary" for presenting results. Use "full" for detailed reports.
+
+    Returns:
+        When detail_level="summary":
+            session_total (float): Cost per session (with caching).
+            session_total_no_cache (float): Cost per session without caching.
+            monthly_total (float): Monthly cost.
+            annual_total (float): Annual cost.
+            sessions_per_month (int): Volume used.
+            savings_pct (float): Caching savings percentage.
+            main_agent_session_cost (float): Main agent portion.
+            subagent_session_cost (float): Sub-agents portion.
+            subagents_summary (list): Per sub-agent cost breakdown.
+            recommended_ttl (str): "5min" or "1hour".
+
+        When detail_level="full":
+            All of the above plus per-cycle token/cost detail, caching
+            strategy, checkpoint analysis, and full explanation dicts.
+
+    Example:
+        # Single agent (no sub-agents):
+        calculate_agent_session_compounded_cost(
+            main_agent_config={
+                "input_price": 3.0,
+                "output_price": 15.0,
+                "cache_read_price": 0.3,
+                "cache_write_price": 3.75,
+                "agent_sessions_per_month": 10000,
+            }
+        )
+
+        # Multi-agent (main + RAG + research):
+        calculate_agent_session_compounded_cost(
+            main_agent_config={
+                "input_price": 3.0,
+                "output_price": 15.0,
+                "cache_read_price": 0.3,
+                "cache_write_price": 3.75,
+                "agent_sessions_per_month": 10000,
+                "questions_per_agent_session": 5,
+                "system_prompt_tokens": 2000,
+                "tools_invoked": 5,
+            },
+            subagents=[
+                {
+                    "type": "rag",
+                    "token_params": {"rag_n_chunks": 10, "output_tokens": 300},
+                    "model_prices": {"input_price": 1.0, "output_price": 5.0},
+                    "questions_invoked": 3,
+                },
+                {
+                    "type": "research",
+                    "token_params": {"n_research_iterations": 4, "output_tokens": 1000},
+                    "model_prices": {"input_price": 1.0, "output_price": 5.0},
+                    "questions_invoked": 0,
+                },
+            ],
+        )
+
+    Constraints:
+        - tools_invoked must be >= number of sub-agents with questions_invoked > 0.
+        - cache_history_checkpoints max 3 (Bedrock allows 4 total, 1 for system+tools).
+        - cache_read_price=None disables caching analysis (returns no-cache cost only).
+        - Sub-agent token_params use defaults for any omitted key — only override
+          what the user specifies.
+    """
+    if subagents is None:
+        subagents = []
+
+    questions_per_session = main_agent_config.get("questions_per_agent_session", 5)
+    tools_invoked = main_agent_config.get("tools_invoked", 5)
+
+    # Validate sub-agent configs
+    for i, sa in enumerate(subagents):
+        if "type" not in sa:
+            raise ValueError(f"subagents[{i}] missing 'type' key")
+        if "token_params" not in sa:
+            raise ValueError(f"subagents[{i}] missing 'token_params' key")
+        if "model_prices" not in sa:
+            raise ValueError(f"subagents[{i}] missing 'model_prices' key")
+        if "questions_invoked" not in sa:
+            raise ValueError(f"subagents[{i}] missing 'questions_invoked' key")
+        qi = sa["questions_invoked"]
+        if qi < 0:
+            raise ValueError(f"subagents[{i}] questions_invoked must be >= 0, got {qi}")
+        if qi > questions_per_session:
+            raise ValueError(
+                f"subagents[{i}] questions_invoked ({qi}) cannot exceed "
+                f"questions_per_agent_session ({questions_per_session})"
+            )
+
+    # ── Step 1: Calculate sub-agent tokens ──
+    subagent_results = []
+    for sa in subagents:
+        sa_type = sa["type"]
+        # Strip detail_level from token_params if present (we always use full internally)
+        token_params = {k: v for k, v in sa["token_params"].items() if k != "detail_level"}
+
+        if sa_type == "rag":
+            token_result = calculate_rag_subagent_tokens(**token_params, detail_level="full")
+        elif sa_type == "research":
+            token_result = calculate_research_subagent_tokens(**token_params, detail_level="full")
+        else:
+            # Future extensibility: caller can pass a pre-computed token_result
+            # or we raise for unknown types
+            if "token_result" in sa:
+                token_result = sa["token_result"]
+            else:
+                raise ValueError(
+                    f"Unknown sub-agent type '{sa_type}'. Supported: 'rag', 'research'. "
+                    f"For custom types, include a 'token_result' key with the pre-computed result."
+                )
+
+        subagent_results.append({
+            "config": sa,
+            "token_result": token_result,
+        })
+
+    # ── Step 2: Adjust main agent config based on sub-agent invocation patterns ──
+    adjusted_config = dict(main_agent_config)
+
+    # Sub-agents with questions_invoked=0: add response to system_prompt (cacheable prefix)
+    pre_session_tokens = 0
+    for sa_res in subagent_results:
+        if sa_res["config"]["questions_invoked"] == 0:
+            pre_session_tokens += sa_res["token_result"]["output_tokens_to_main_agent"]
+
+    if pre_session_tokens > 0:
+        current_sys = adjusted_config.get("system_prompt_tokens", 2000)
+        adjusted_config["system_prompt_tokens"] = current_sys + pre_session_tokens
+
+    # Sub-agents with questions_invoked > 0: their responses are tool_results
+    # Build the tool_result_tokens list with sub-agent responses first, then regular tools
+    per_question_subagents = [
+        sa_res for sa_res in subagent_results
+        if sa_res["config"]["questions_invoked"] > 0
+    ]
+
+    if per_question_subagents:
+        # Number of regular tools (non-sub-agent)
+        n_subagent_tools = len(per_question_subagents)
+        regular_tool_result = adjusted_config.get("tool_result_tokens", 100)
+        current_tools_invoked = adjusted_config.get("tools_invoked", 5)
+
+        # The sub-agents ARE tools — they count toward tools_invoked
+        # Total tools = sub-agent tools + remaining regular tools
+        n_regular_tools = current_tools_invoked - n_subagent_tools
+
+        if n_regular_tools < 0:
+            raise ValueError(
+                f"tools_invoked ({current_tools_invoked}) must be >= number of per-question "
+                f"sub-agents ({n_subagent_tools}). Sub-agents count as tools."
+            )
+
+        # Build per-tool result sizes: sub-agents first, then regular tools
+        tool_result_list = []
+        for sa_res in per_question_subagents:
+            tool_result_list.append(sa_res["token_result"]["output_tokens_to_main_agent"])
+        # Fill remaining with regular tool result size
+        if isinstance(regular_tool_result, list):
+            # If already a list, take the non-sub-agent portion
+            tool_result_list.extend(regular_tool_result[:n_regular_tools])
+        else:
+            tool_result_list.extend([regular_tool_result] * n_regular_tools)
+
+        adjusted_config["tool_result_tokens"] = tool_result_list
+
+    # ── Step 3: Calculate main agent cost ──
+    # Remove keys that aren't parameters of calculate_main_agent_compounded_cost
+    _excluded_keys = {"detail_level", "model_name"}
+    cost_params = {k: v for k, v in adjusted_config.items() if k not in _excluded_keys}
+    cost_params["detail_level"] = "full"  # always need full detail internally
+    main_cost_result = calculate_main_agent_compounded_cost(**cost_params)
+
+    # ── Step 4: Calculate sub-agent costs ──
+    subagent_cost_results = []
+    for sa_res in subagent_results:
+        sa_config = sa_res["config"]
+        model_prices = sa_config["model_prices"]
+        token_result = sa_res["token_result"]
+        qi = sa_config["questions_invoked"]
+
+        # Cost per invocation
+        cost_per_invocation = calculate_subagent_cost(
+            token_result,
+            input_price=model_prices["input_price"],
+            output_price=model_prices["output_price"],
+        )
+
+        # Number of invocations per session
+        if qi == 0:
+            invocations_per_session = 1
+        else:
+            invocations_per_session = qi
+
+        session_cost = cost_per_invocation["total_cost"] * invocations_per_session
+        sessions_per_month = main_agent_config.get("agent_sessions_per_month", 0)
+        monthly_cost = session_cost * sessions_per_month
+
+        subagent_cost_results.append({
+            "type": sa_config["type"],
+            "questions_invoked": qi,
+            "invocations_per_session": invocations_per_session,
+            "cost_per_invocation": cost_per_invocation["total_cost"],
+            "session_cost": session_cost,
+            "monthly_cost": monthly_cost,
+            "annual_cost": monthly_cost * 12,
+            "model_prices": model_prices,
+            "token_result": token_result,
+            "cost_detail": cost_per_invocation,
+        })
+
+    # ── Step 5: Compute totals ──
+    main_session = main_cost_result["no_cache"]["session_total"]
+    main_session_cached = main_cost_result["with_cache"]["session_total"] if main_cost_result["caching_supported"] else main_session
+    subagent_session_total = sum(sa["session_cost"] for sa in subagent_cost_results)
+
+    sessions_per_month = main_agent_config.get("agent_sessions_per_month", 0)
+
+    # Grand totals (using cached main agent cost if available)
+    session_total = main_session_cached + subagent_session_total
+    monthly_total = session_total * sessions_per_month
+    annual_total = monthly_total * 12
+
+    # No-cache comparison
+    session_total_no_cache = main_session + subagent_session_total
+    monthly_total_no_cache = session_total_no_cache * sessions_per_month
+
+    # ── Build explanation ──
+    explanation = {
+        "architecture": {
+            "main_agent_model": f"Prices: input=${main_agent_config.get('input_price', '?')}/M, output=${main_agent_config.get('output_price', '?')}/M",
+            "sub_agents": [
+                {
+                    "type": sa["type"],
+                    "model_prices": sa["model_prices"],
+                    "questions_invoked": sa["questions_invoked"],
+                    "invocations_per_session": sa["invocations_per_session"],
+                    "output_to_main_agent": f"{_fmt(sa['token_result']['output_tokens_to_main_agent'])} tokens",
+                    "role": "cacheable prefix (pre-session)" if sa["questions_invoked"] == 0 else f"tool in first {sa['questions_invoked']} questions",
+                }
+                for sa in subagent_cost_results
+            ],
+        },
+        "cost_breakdown": {
+            "main_agent_per_session": f"${main_session_cached:.6f}" + (" (with cache)" if main_cost_result["caching_supported"] else ""),
+            "subagents_per_session": f"${subagent_session_total:.6f}",
+            "total_per_session": f"${session_total:.6f}",
+            "total_monthly": f"${monthly_total:,.2f}",
+            "total_annual": f"${annual_total:,.2f}",
+        },
+        "savings_from_caching": {
+            "session_no_cache": f"${session_total_no_cache:.6f}",
+            "session_with_cache": f"${session_total:.6f}",
+            "savings_per_session": f"${session_total_no_cache - session_total:.6f}",
+        } if main_cost_result["caching_supported"] else None,
+    }
+
+    result = {
+        "main_agent": main_cost_result,
+        "subagents": subagent_cost_results,
+        "session_total": session_total,
+        "session_total_no_cache": session_total_no_cache,
+        "monthly_total": monthly_total,
+        "annual_total": annual_total,
+        "sessions_per_month": sessions_per_month,
+        "explanation": explanation,
+    }
+
+    # ── Step 6: Build capacity_profile for use by check_capacity_fit() ──
+    # This provides the token summary needed for capacity planning without re-computing.
+    main_token_result = main_cost_result.get("token_result", {})
+    main_session_data = main_token_result.get("session", [])
+    questions_per_session = main_agent_config.get("questions_per_agent_session", 5)
+    main_tools_invoked = main_agent_config.get("tools_invoked", 5)
+    main_cycles_per_question = main_tools_invoked + 1
+
+    # Compute per-call averages from the full session token data
+    if main_session_data:
+        total_input = sum(q.get("question_total_input", 0) for q in main_session_data)
+        total_output = sum(q.get("question_total_output", 0) for q in main_session_data)
+        total_calls = len(main_session_data) * main_cycles_per_question
+        avg_input_per_call = total_input / total_calls if total_calls > 0 else 0
+        avg_output_per_call = total_output / total_calls if total_calls > 0 else 0
+        tokens_per_question = (total_input + total_output) / len(main_session_data) if main_session_data else 0
+    else:
+        # Fallback: use the cost result's token assumptions
+        avg_input_per_call = 0
+        avg_output_per_call = 0
+        tokens_per_question = 0
+
+    capacity_profile = {
+        "sessions_per_month": sessions_per_month,
+        "main_agent": {
+            "model_name": main_agent_config.get("model_name"),
+            "llm_calls_per_question": main_cycles_per_question,
+            "avg_input_tokens_per_call": avg_input_per_call,
+            "avg_output_tokens_per_call": avg_output_per_call,
+            "tokens_per_question": tokens_per_question,
+            "questions_per_session": questions_per_session,
+        },
+        "sub_agents": [],
+    }
+
+    for sa_res in subagent_cost_results:
+        sa_config = sa_res.get("config", sa_res)
+        sa_token_result = sa_res.get("token_result", {})
+        qi = sa_res.get("questions_invoked", sa_config.get("questions_invoked", 0))
+
+        # Skip pre-session sub-agents (questions_invoked=0) — they don't generate runtime calls
+        if qi == 0:
+            continue
+
+        # Determine LLM calls per invocation from the token result
+        sa_cycles = sa_token_result.get("cycles", [])
+        llm_calls_per_invocation = len(sa_cycles) if sa_cycles else 1
+
+        sa_total_input = sa_token_result.get("total_input", sa_token_result.get("total_input_tokens", 0))
+        sa_total_output = sa_token_result.get("total_output", sa_token_result.get("total_output_tokens", 0))
+        sa_avg_input = sa_total_input / llm_calls_per_invocation if llm_calls_per_invocation > 0 else 0
+        sa_avg_output = sa_total_output / llm_calls_per_invocation if llm_calls_per_invocation > 0 else 0
+
+        capacity_profile["sub_agents"].append({
+            "type": sa_res["type"],
+            "model_name": sa_config.get("model_prices", {}).get("model_name") or sa_config.get("model_name"),
+            "llm_calls_per_invocation": llm_calls_per_invocation,
+            "invocations_per_session": sa_res["invocations_per_session"],
+            "avg_input_tokens_per_call": sa_avg_input,
+            "avg_output_tokens_per_call": sa_avg_output,
+            "tokens_per_invocation": sa_total_input + sa_total_output,
+        })
+
+    result["capacity_profile"] = capacity_profile
+
+    # ── Step 7: Generate token breakdown table (full mode only) ──
+    result["token_table"] = _format_token_table(result)
+    result["capacity_profile_table"] = _format_capacity_profile_table(capacity_profile)
+
+    if detail_level == "summary":
+        return {
+            "session_total": session_total,
+            "session_total_no_cache": session_total_no_cache,
+            "monthly_total": monthly_total,
+            "annual_total": annual_total,
+            "sessions_per_month": sessions_per_month,
+            "savings_pct": (session_total_no_cache - session_total) / session_total_no_cache * 100 if session_total_no_cache > 0 else 0,
+            "main_agent_session_cost": main_session_cached,
+            "subagent_session_cost": subagent_session_total,
+            "subagents_summary": [
+                {
+                    "type": sa["type"],
+                    "invocations_per_session": sa["invocations_per_session"],
+                    "cost_per_invocation": sa["cost_per_invocation"],
+                    "session_cost": sa["session_cost"],
+                }
+                for sa in subagent_cost_results
+            ],
+            "recommended_ttl": main_cost_result.get("recommended_ttl"),
+            "capacity_profile": capacity_profile,
+        }
+    return result
+
+
 def format_price(p):
     try:
         v = float(p)
@@ -673,6 +2301,639 @@ def format_price(p):
         elif v < 1: return f"${v:.4f}"
         else: return f"${v:.2f}"
     except: return p
+
+
+def _format_token_table(result):
+    """Generate a markdown token breakdown table from calculate_agent_session_compounded_cost full output.
+
+    Produces separate tables for:
+    1. Pre-session sub-agents (questions_invoked=0)
+    2. Per-question sub-agents (one table per type, showing a single invocation)
+    3. Main agent session (per-cycle breakdown with running totals)
+    4. Session summary
+
+    Args:
+        result (dict): Full output from calculate_agent_session_compounded_cost(detail_level="full").
+
+    Returns:
+        str: Markdown-formatted token breakdown tables.
+    """
+    lines = []
+    main_cost_result = result["main_agent"]
+    token_result = main_cost_result["token_result"]
+    assumptions = token_result["assumptions"]
+    session_data = token_result["session"]
+    subagent_cost_results = result.get("subagents", [])
+
+    system_prompt_tokens = assumptions["system_prompt_tokens"]
+    tool_desc_tokens = assumptions["tool_desc_tokens"]
+    fixed_per_call = assumptions["fixed_per_call"]
+    history_per_question = assumptions["history_per_question"]
+    cycles_per_question = assumptions["cycles_per_question"]
+    tools_invoked = assumptions["tools_invoked"]
+    delta_per_tool = assumptions["delta_per_tool"]
+    input_tokens = assumptions["input_tokens"]
+    output_tokens = assumptions["output_tokens"]
+    tool_call_tokens = assumptions["tool_call_tokens"]
+    tool_result_tokens_list = assumptions["tool_result_tokens"]
+
+    # Identify sub-agent tool positions (sub-agents are first in tool_result_tokens list)
+    per_question_subagents = [sa for sa in subagent_cost_results if sa["questions_invoked"] > 0]
+    pre_session_subagents = [sa for sa in subagent_cost_results if sa["questions_invoked"] == 0]
+
+    # ── Pre-session sub-agents ──
+    for sa in pre_session_subagents:
+        sa_token = sa["token_result"]
+        sa_cycles = sa_token.get("cycles", [])
+        sa_assumptions = sa_token.get("assumptions", {})
+        model_name = sa.get("model_prices", {}).get("model_name") or sa["type"].upper()
+
+        lines.append(f"## Pre-Session: {sa['type'].title()} Sub-Agent (1 invocation on {model_name})")
+        lines.append("")
+        lines.append("| Cycle | Type | Input Components | Input Tokens | Output Tokens | Cumulative In | Cumulative Out |")
+        lines.append("|-------|------|------------------|--------------|---------------|---------------|----------------|")
+
+        sa_fixed = sa_assumptions.get("fixed_per_call", 0)
+        sa_sys = sa_assumptions.get("system_prompt_tokens", 0)
+        sa_tool_desc = sa_assumptions.get("tool_desc_tokens", 0)
+        sa_input_query = sa_assumptions.get("input_query_tokens", 0)
+        accumulated = 0
+        sa_cum_in = 0
+        sa_cum_out = 0
+
+        for cyc in sa_cycles:
+            c_num = cyc["cycle"]
+            c_input = cyc["input_tokens"]
+            c_output = cyc["output_tokens"]
+            c_type = cyc.get("type", "")
+
+            if c_num == 1:
+                components = f"system({_fmt(sa_sys)}) + tools({_fmt(sa_tool_desc)}) + query({_fmt(sa_input_query)})"
+            else:
+                components = f"prev({_fmt(c_input - accumulated)}) + result({_fmt(accumulated - (sa_fixed + sa_input_query) if accumulated > 0 else 0)})"
+                # Simpler: just show the delta
+                prev_input = sa_cycles[c_num - 2]["input_tokens"]
+                prev_output = sa_cycles[c_num - 2]["output_tokens"]
+                # The accumulated context grows by prev_output + tool_result
+                components = f"prev({_fmt(prev_input)}+{_fmt(prev_output)}) + result"
+
+            sa_cum_in += c_input
+            sa_cum_out += c_output
+
+            lines.append(f"| {c_num} | {c_type} | {components} | {_fmt(c_input)} | {_fmt(c_output)} | {_fmt(sa_cum_in)} | {_fmt(sa_cum_out)} |")
+
+        sa_total_in = sa_token.get("total_input", 0)
+        sa_total_out = sa_token.get("total_output", 0)
+        sa_output_to_main = sa_token.get("output_tokens_to_main_agent", 0)
+        lines.append(f"| | **Totals** | | **{_fmt(sa_total_in)}** | **{_fmt(sa_total_out)}** | | |")
+        lines.append("")
+        lines.append(f"→ Output ({_fmt(sa_output_to_main)} tokens) added to main agent system prompt (cached)")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # ── Per-question sub-agents ──
+    for sa in per_question_subagents:
+        sa_token = sa["token_result"]
+        sa_cycles = sa_token.get("cycles", [])
+        sa_assumptions = sa_token.get("assumptions", {})
+        model_name = sa.get("model_prices", {}).get("model_name") or sa["type"].upper()
+        qi = sa["questions_invoked"]
+
+        lines.append(f"## {sa['type'].title()} Sub-Agent (per invocation on {model_name}, invoked in Q1–Q{qi})")
+        lines.append("")
+        lines.append("| Cycle | Type | Input Components | Input Tokens | Output Tokens | Cumulative In | Cumulative Out |")
+        lines.append("|-------|------|------------------|--------------|---------------|---------------|----------------|")
+
+        sa_sys = sa_assumptions.get("system_prompt_tokens", 0)
+        sa_tool_desc = sa_assumptions.get("tool_desc_tokens", 0)
+        sa_input_query = sa_assumptions.get("input_query_tokens", 0)
+        sa_cum_in = 0
+        sa_cum_out = 0
+
+        for cyc in sa_cycles:
+            c_num = cyc["cycle"]
+            c_input = cyc["input_tokens"]
+            c_output = cyc["output_tokens"]
+            c_type = cyc.get("type", "")
+
+            if c_num == 1:
+                components = f"system({_fmt(sa_sys)}) + tools({_fmt(sa_tool_desc)}) + query({_fmt(sa_input_query)})"
+            else:
+                components = f"prev + accumulated_context"
+
+            sa_cum_in += c_input
+            sa_cum_out += c_output
+
+            lines.append(f"| {c_num} | {c_type} | {components} | {_fmt(c_input)} | {_fmt(c_output)} | {_fmt(sa_cum_in)} | {_fmt(sa_cum_out)} |")
+
+        sa_total_in = sa_token.get("total_input", 0)
+        sa_total_out = sa_token.get("total_output", 0)
+        sa_output_to_main = sa_token.get("output_tokens_to_main_agent", 0)
+        lines.append(f"| | **Totals** | | **{_fmt(sa_total_in)}** | **{_fmt(sa_total_out)}** | | |")
+        lines.append("")
+        lines.append(f"→ Output ({_fmt(sa_output_to_main)} tokens) returned to main agent as tool_result")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # ── Main agent session ──
+    model_name = result.get("capacity_profile", {}).get("main_agent", {}).get("model_name") or "Main Agent"
+    lines.append(f"## Main Agent Session ({model_name})")
+    lines.append("")
+    lines.append("| Question | Cycle | Type | Input Components | Input Tokens | Output Tokens | Cumulative In | Cumulative Out |")
+    lines.append("|----------|-------|------|------------------|--------------|---------------|---------------|----------------|")
+
+    running_input = 0
+    running_output = 0
+    accumulated_history = 0
+
+    # Determine pre-session addition to system prompt
+    pre_session_tokens_added = sum(
+        sa["token_result"].get("output_tokens_to_main_agent", 0)
+        for sa in pre_session_subagents
+    )
+    # The system_prompt_tokens in assumptions already includes pre-session tokens
+    # (they were added in Step 2 of the cost function). Show the original + addition.
+    original_system_prompt = system_prompt_tokens - pre_session_tokens_added
+
+    for q_data in session_data:
+        q_num = q_data["question"]
+
+        for cyc in q_data["cycles"]:
+            c_num = cyc["cycle"]
+            c_input = cyc["input_tokens"]
+            c_output = cyc["output_tokens"]
+            c_type = cyc.get("type", "tool_use")
+
+            # Build input components description
+            if c_num == 1:
+                parts = []
+                if pre_session_tokens_added > 0:
+                    parts.append(f"system({_fmt(original_system_prompt)})+pre-session({_fmt(pre_session_tokens_added)})")
+                else:
+                    parts.append(f"system({_fmt(system_prompt_tokens)})")
+                parts.append(f"tools({_fmt(tool_desc_tokens)})")
+                if accumulated_history > 0:
+                    parts.append(f"history({_fmt(accumulated_history)})")
+                parts.append(f"user({_fmt(input_tokens)})")
+                components = " + ".join(parts)
+            else:
+                # Subsequent cycles: previous context + tool exchange
+                tool_idx = c_num - 2  # which tool result we're adding (0-indexed)
+                if tool_idx < len(tool_result_tokens_list):
+                    tr_size = tool_result_tokens_list[tool_idx]
+                    # Check if this is a sub-agent tool
+                    if tool_idx < len(per_question_subagents) and q_num <= per_question_subagents[tool_idx]["questions_invoked"]:
+                        sa_type = per_question_subagents[tool_idx]["type"]
+                        components = f"prev + call({_fmt(tool_call_tokens)}) + {sa_type}_result({_fmt(tr_size)})"
+                    else:
+                        components = f"prev + call({_fmt(tool_call_tokens)}) + tool_result({_fmt(tr_size)})"
+                else:
+                    components = f"prev + call({_fmt(tool_call_tokens)}) + tool_result"
+
+            # Determine output type label
+            if c_type == "end_turn":
+                type_label = "final_answer"
+            elif c_num - 1 < len(per_question_subagents) and q_num <= per_question_subagents[c_num - 2]["questions_invoked"] if c_num > 1 and (c_num - 2) < len(per_question_subagents) else False:
+                type_label = f"→{per_question_subagents[c_num - 2]['type']}"
+            else:
+                type_label = "tool_call"
+
+            running_input += c_input
+            running_output += c_output
+
+            lines.append(
+                f"| {q_num} | {c_num} | {type_label} | {components} | "
+                f"{_fmt(c_input)} | {_fmt(c_output)} | {_fmt(running_input)} | {_fmt(running_output)} |"
+            )
+
+        # Question subtotal row
+        q_total_in = q_data["question_total_input"]
+        q_total_out = q_data["question_total_output"]
+        lines.append(f"| | | | **Q{q_num} Subtotal** | **{_fmt(q_total_in)}** | **{_fmt(q_total_out)}** | | |")
+
+        # History explanation row (italic, not for the last question)
+        questions_per_session = len(session_data)
+        if q_num < questions_per_session:
+            # Build the history formula
+            total_delta = assumptions["total_delta"]
+            history_components = f"user({_fmt(input_tokens)}) + tool_exchanges({_fmt(total_delta)}) + answer({_fmt(output_tokens)})"
+            new_cumulative = accumulated_history + history_per_question
+            lines.append(
+                f"| | | | *→ History added to next Q: {history_components} = {_fmt(history_per_question)}. "
+                f"Cumulative history: {_fmt(new_cumulative)}* | | | | |"
+            )
+
+        # Update accumulated history for next question
+        accumulated_history += history_per_question
+
+    # Session total row
+    session_total_in = token_result["session_total_input"]
+    session_total_out = token_result["session_total_output"]
+    lines.append(f"| | | | **Session Total** | **{_fmt(session_total_in)}** | **{_fmt(session_total_out)}** | | |")
+    lines.append("")
+
+    # ── Session summary ──
+    lines.append("---")
+    lines.append("")
+    lines.append("## Session Summary")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Total Input Tokens (Main Agent) | {_fmt(session_total_in)} |")
+    lines.append(f"| Total Output Tokens (Main Agent) | {_fmt(session_total_out)} |")
+    lines.append(f"| Total Tokens (Main Agent) | {_fmt(session_total_in + session_total_out)} |")
+
+    # Sub-agent totals
+    all_sa_tokens = 0
+    all_sa_calls = 0
+    for sa in subagent_cost_results:
+        sa_token = sa["token_result"]
+        sa_total = sa_token.get("total_input", 0) + sa_token.get("total_output", 0)
+        sa_invocations = sa["invocations_per_session"]
+        sa_calls = len(sa_token.get("cycles", [])) or 1
+        sa_type = sa["type"]
+        model_name = sa.get("model_prices", {}).get("model_name") or sa_type.upper()
+
+        total_for_session = sa_total * sa_invocations
+        total_calls_for_session = sa_calls * sa_invocations
+        all_sa_tokens += total_for_session
+        all_sa_calls += total_calls_for_session
+
+        lines.append(f"| Total Tokens ({sa_type.title()} × {sa_invocations} invocations) | {_fmt(total_for_session)} |")
+        lines.append(f"| LLM Calls ({sa_type.title()} × {sa_invocations}) | {total_calls_for_session} |")
+
+    grand_total = session_total_in + session_total_out + all_sa_tokens
+    main_calls = len(session_data) * cycles_per_question
+    lines.append(f"| **Total Tokens (All Agents)** | **{_fmt(grand_total)}** |")
+    lines.append(f"| LLM Calls (Main Agent) | {main_calls} |")
+    lines.append(f"| **Total LLM Calls** | **{main_calls + all_sa_calls}** |")
+
+    return "\n".join(lines)
+
+
+def _format_capacity_profile_table(capacity_profile):
+    """Generate a markdown derivation table showing how capacity profile values were calculated.
+
+    Args:
+        capacity_profile (dict): The capacity_profile from calculate_agent_session_compounded_cost.
+
+    Returns:
+        str: Markdown-formatted table with Field | Formula | Value columns.
+    """
+    lines = []
+    main = capacity_profile.get("main_agent", {})
+    sessions = capacity_profile.get("sessions_per_month", 0)
+    questions_per_session = main.get("questions_per_session", 0)
+    llm_calls_per_q = main.get("llm_calls_per_question", 0)
+    avg_input = main.get("avg_input_tokens_per_call", 0)
+    avg_output = main.get("avg_output_tokens_per_call", 0)
+    tokens_per_q = main.get("tokens_per_question", 0)
+
+    total_calls = questions_per_session * llm_calls_per_q
+    total_input = avg_input * total_calls
+    total_output = avg_output * total_calls
+    questions_per_month = sessions * questions_per_session
+
+    model_name = main.get("model_name") or "Main Agent"
+    lines.append(f"### Capacity Profile Derivation — {model_name}")
+    lines.append("")
+    lines.append("| Field | Formula | Value |")
+    lines.append("|-------|---------|-------|")
+    lines.append(f"| LLM calls per question | tools_invoked + 1 | {llm_calls_per_q} |")
+    lines.append(f"| Total input tokens/session | sum(Q1..Q{questions_per_session} input) | {_fmt(total_input)} |")
+    lines.append(f"| Total output tokens/session | sum(Q1..Q{questions_per_session} output) | {_fmt(total_output)} |")
+    lines.append(f"| Total LLM calls/session | questions × cycles_per_question | {questions_per_session} × {llm_calls_per_q} = {total_calls} |")
+    lines.append(f"| Avg input tokens per call | total_input / total_calls | {_fmt(total_input)} ÷ {total_calls} = {_fmt(avg_input)} |")
+    lines.append(f"| Avg output tokens per call | total_output / total_calls | {_fmt(total_output)} ÷ {total_calls} = {_fmt(avg_output)} |")
+    lines.append(f"| Tokens per question | (total_input + total_output) / questions | ({_fmt(total_input)} + {_fmt(total_output)}) ÷ {questions_per_session} = {_fmt(tokens_per_q)} |")
+    lines.append(f"| Questions per month | sessions × questions_per_session | {_fmt(sessions)} × {questions_per_session} = {_fmt(questions_per_month)} |")
+
+    # Sub-agents
+    sub_agents = capacity_profile.get("sub_agents", [])
+    for sa in sub_agents:
+        sa_model = sa.get("model_name") or sa.get("type", "Sub-Agent").title()
+        sa_calls = sa.get("llm_calls_per_invocation", 0)
+        sa_invocations = sa.get("invocations_per_session", 0)
+        sa_avg_in = sa.get("avg_input_tokens_per_call", 0)
+        sa_avg_out = sa.get("avg_output_tokens_per_call", 0)
+        sa_tokens = sa.get("tokens_per_invocation", 0)
+        sa_total_in = sa_avg_in * sa_calls
+        sa_total_out = sa_avg_out * sa_calls
+
+        lines.append("")
+        lines.append(f"### Capacity Profile Derivation — {sa_model} ({sa.get('type', 'sub-agent')})")
+        lines.append("")
+        lines.append("| Field | Formula | Value |")
+        lines.append("|-------|---------|-------|")
+        lines.append(f"| LLM calls per invocation | from token_result cycles | {sa_calls} |")
+        lines.append(f"| Invocations per session | questions_invoked | {sa_invocations} |")
+        lines.append(f"| Total input tokens/invocation | sum(cycle inputs) | {_fmt(sa_total_in)} |")
+        lines.append(f"| Total output tokens/invocation | sum(cycle outputs) | {_fmt(sa_total_out)} |")
+        lines.append(f"| Avg input tokens per call | total_input / calls | {_fmt(sa_total_in)} ÷ {sa_calls} = {_fmt(sa_avg_in)} |")
+        lines.append(f"| Avg output tokens per call | total_output / calls | {_fmt(sa_total_out)} ÷ {sa_calls} = {_fmt(sa_avg_out)} |")
+        lines.append(f"| Tokens per invocation | total_input + total_output | {_fmt(sa_total_in)} + {_fmt(sa_total_out)} = {_fmt(sa_tokens)} |")
+        sa_monthly_invocations = sessions * sa_invocations
+        lines.append(f"| Invocations per month | sessions × invocations_per_session | {_fmt(sessions)} × {sa_invocations} = {_fmt(sa_monthly_invocations)} |")
+
+    return "\n".join(lines)
+
+
+def _format_full_output(result, cache_status=None, models_found=None, all_tiers=None,
+                        prices=None, tier_limits=None, cap_result=None):
+    """Generate the complete formatted markdown report in the standard section order.
+
+    Section order:
+    1. Cost Summary (top)
+    2. Capacity Summary — Capacity Fit Result only (top)
+    3. Pricing Data Freshness
+    4. Model Resolution
+    5. Pricing (tiers table)
+    6. Inputs & Assumptions
+    7. Token Breakdown (Main Agent, Sub-Agents, Session Summary as sub-sections)
+    8. Prompt Caching Strategy (Checkpoint Config, Break-Even, Cost Comparison)
+    9. Capacity Detailed Calculations (Profile Derivation, Assumptions, RPM, TPM, TPD)
+
+    Args:
+        result (dict): Full output from calculate_agent_session_compounded_cost(detail_level="full").
+        cache_status (dict|None): Output from check_pricing_data_status().
+        models_found (list|None): List of model names found during resolution.
+        all_tiers (dict|None): Output from extract_bedrock_model_prices(all_tiers=True).
+        prices (dict|None): Selected prices dict.
+        tier_limits (dict|None): Output from get_tier_limits_for_model().
+        cap_result (dict|None): Output from check_capacity_fit().
+
+    Returns:
+        str: Complete markdown report.
+    """
+    r = result
+    main = r["main_agent"]
+    tr = main["token_result"]
+    assumptions = tr["assumptions"]
+    exp = main["explanation"]
+    sessions_per_month = r["sessions_per_month"]
+    savings_pct = (r["session_total_no_cache"] - r["session_total"]) / r["session_total_no_cache"] * 100 if r["session_total_no_cache"] > 0 else 0
+
+    lines = []
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 1: Cost Summary
+    # ═══════════════════════════════════════════════════════════════
+    lines.append("## Cost Summary")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| **Cost per session (with caching)** | ${r['session_total']:.6f} |")
+    lines.append(f"| **Cost per session (no caching)** | ${r['session_total_no_cache']:.6f} |")
+    lines.append(f"| **Monthly total** | ${r['monthly_total']:,.2f} |")
+    lines.append(f"| **Annual total** | ${r['annual_total']:,.2f} |")
+    lines.append(f"| Sessions per month | {sessions_per_month:,} |")
+    lines.append(f"| Savings from caching | {savings_pct:.1f}% |")
+    lines.append(f"| Main agent session cost | ${main['with_cache']['session_total']:.6f} |")
+
+    subagent_cost_results = r.get("subagents", [])
+    if subagent_cost_results:
+        subagent_total = sum(sa["session_cost"] for sa in subagent_cost_results)
+        lines.append(f"| Sub-agent session cost | ${subagent_total:.6f} |")
+        for sa in subagent_cost_results:
+            lines.append(f"|   — {sa['type'].title()} ({sa['invocations_per_session']}x) | ${sa['session_cost']:.6f} |")
+
+    lines.append(f"| Recommended TTL | {main.get('recommended_ttl', 'N/A')} |")
+    lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 2: Capacity Summary (Fit Result only)
+    # ═══════════════════════════════════════════════════════════════
+    if cap_result and tier_limits:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Capacity Summary")
+        lines.append("")
+        lines.append("| Metric | Your Workload (Peak) | Quota Limit | Fits? | Utilization |")
+        lines.append("|--------|:--------------------:|:-----------:|:-----:|:-----------:|")
+
+        rpm_fit = "✅" if cap_result.get("rpm_fits") else "❌"
+        tpm_fit = "✅" if cap_result.get("tpm_fits") else "❌"
+        tpd_fit = "✅" if cap_result.get("tpd_fits") else "❌"
+
+        lines.append(f"| RPM | {cap_result['peak_rpm']:.0f} | {tier_limits['rpm_high']:,.0f} | {rpm_fit} | {cap_result['rpm_utilization_pct']:.1f}% |")
+        lines.append(f"| TPM (effective) | {cap_result['effective_peak_tpm']:,.0f} | {tier_limits['tpm_high']:,.0f} | {tpm_fit} | {cap_result['tpm_utilization_pct']:.1f}% |")
+        lines.append(f"| TPD | {cap_result['estimated_tpd']:,.0f} | {tier_limits['tpd_high']:,.0f} | {tpd_fit} | {cap_result['tpd_utilization_pct']:.1f}% |")
+        lines.append("")
+
+        overall = "✅ Workload fits within all limits" if cap_result.get("fits") else "❌ Workload EXCEEDS limits"
+        lines.append(f"**{overall}**")
+        lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 3: Pricing Data Freshness
+    # ═══════════════════════════════════════════════════════════════
+    if cache_status:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Pricing Data Freshness")
+        lines.append("")
+        lines.append(f"**Status:** {cache_status['status']}")
+        lines.append("")
+        if cache_status.get("found"):
+            lines.append("| File | Age (days) |")
+            lines.append("|------|-----------|")
+            for f in cache_status["found"]:
+                lines.append(f"| {f['file']} | {f['age_days']} |")
+            lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 4: Model Resolution
+    # ═══════════════════════════════════════════════════════════════
+    if models_found:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Model Resolution")
+        lines.append("")
+        model_name = r.get("capacity_profile", {}).get("main_agent", {}).get("model_name") or "Unknown"
+        lines.append(f"Models found: {', '.join(models_found)}")
+        lines.append("")
+        lines.append(f"**Selected:** {model_name} (latest)")
+        lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 5: Pricing
+    # ═══════════════════════════════════════════════════════════════
+    if all_tiers and prices:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Pricing")
+        lines.append("")
+        lines.append("| Tier | Input ($/M) | Output ($/M) | Cache Read ($/M) | Cache Write ($/M) |")
+        lines.append("|------|-------------|--------------|-------------------|-------------------|")
+        for tier_name, tier_prices in sorted(all_tiers.items()):
+            cr = f"${tier_prices['cache_read']}" if tier_prices.get('cache_read') else "N/A"
+            cw = f"${tier_prices['cache_write']}" if tier_prices.get('cache_write') else "N/A"
+            lines.append(f"| {tier_name} | ${tier_prices['input']} | ${tier_prices['output']} | {cr} | {cw} |")
+        lines.append("")
+        lines.append(f"**Selected:** Input: ${prices['input']}/M, Output: ${prices['output']}/M, Cache Read: ${prices.get('cache_read', 'N/A')}/M, Cache Write: ${prices.get('cache_write', 'N/A')}/M")
+        lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 6: Inputs & Assumptions
+    # ═══════════════════════════════════════════════════════════════
+    lines.append("---")
+    lines.append("")
+    lines.append("## Inputs & Assumptions")
+    lines.append("")
+    lines.append("### Main Agent")
+    lines.append("")
+    lines.append("| Parameter | Value |")
+    lines.append("|-----------|-------|")
+    lines.append(f"| Questions per session | {assumptions['questions_per_agent_session']} |")
+    lines.append(f"| Input tokens per question | {assumptions['input_tokens']} |")
+    lines.append(f"| Output tokens per question | {assumptions['output_tokens']} |")
+    lines.append(f"| System prompt tokens | {_fmt(assumptions['system_prompt_tokens'])} |")
+    lines.append(f"| Tools passed to agent | {assumptions['tools_passed_to_agent']} |")
+    lines.append(f"| Tool spec tokens | {assumptions['tool_spec_tokens']} |")
+    lines.append(f"| Tools invoked per question | {assumptions['tools_invoked']} |")
+    lines.append(f"| Tool call tokens | {assumptions['tool_call_tokens']} |")
+    lines.append(f"| Tool result tokens | {assumptions['tool_result_tokens']} |")
+    lines.append(f"| History mode | {assumptions['history_mode']} |")
+    lines.append("")
+
+    # Sub-agent assumptions
+    for sa in subagent_cost_results:
+        sa_assumptions = sa.get("token_result", {}).get("assumptions", {})
+        sa_type = sa["type"]
+        lines.append(f"### {sa_type.title()} Sub-Agent")
+        lines.append("")
+        lines.append("| Parameter | Value |")
+        lines.append("|-----------|-------|")
+        lines.append(f"| Questions invoked | {sa['questions_invoked']} |")
+        lines.append(f"| Invocations per session | {sa['invocations_per_session']} |")
+        for k, v in sa_assumptions.items():
+            if k not in ("tool_desc_tokens", "fixed_per_call", "total_tool_calls", "total_cycles", "retrieval_result_tokens"):
+                lines.append(f"| {k} | {v} |")
+        lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 7: Token Breakdown (with Session Summary as sub-section)
+    # ═══════════════════════════════════════════════════════════════
+    lines.append("---")
+    lines.append("")
+    lines.append("## Token Breakdown")
+    lines.append("")
+    lines.append(r.get("token_table", ""))
+    lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 8: Prompt Caching Strategy
+    # ═══════════════════════════════════════════════════════════════
+    lines.append("---")
+    lines.append("")
+    lines.append("## Prompt Caching Strategy")
+    lines.append("")
+
+    # Checkpoint Configuration
+    lines.append("### Checkpoint Configuration")
+    lines.append("")
+    lines.append(f"- **Checkpoint 1:** {exp['caching_strategy']['checkpoint_1']}")
+    lines.append(f"- **History checkpoints:** {exp['caching_strategy']['history_checkpoints']}")
+    lines.append(f"- **Note:** {exp['caching_strategy']['max_checkpoints_note']}")
+    lines.append("")
+
+    # Checkpoint Break-Even Analysis
+    lines.append("### Checkpoint Break-Even Analysis")
+    lines.append("")
+    lines.append("| Checkpoint After | Tokens Cached | Write Cost | Subsequent Reads | Total Savings | Net Benefit | Worth It? |")
+    lines.append("|:----------------:|:-------------:|:----------:|:----------------:|:-------------:|:-----------:|:---------:|")
+    for cp in exp.get("checkpoint_analysis", []):
+        worth = "✅ Yes" if cp["worth_it"] else "❌ No"
+        lines.append(f"| Q{cp['checkpoint_after_question']} | {cp['tokens_cached']:,} | ${cp['write_cost']:.6f} | {cp['subsequent_reads']} | ${cp['total_savings']:.6f} | ${cp['net_benefit']:.6f} | {worth} |")
+    lines.append("")
+
+    # Cost Comparison
+    lines.append("### Cost Comparison")
+    lines.append("")
+    lines.append("| Metric | With Cache | Without Cache |")
+    lines.append("|--------|-----------|---------------|")
+    lines.append(f"| Per session | ${main['with_cache']['session_total']:.6f} | ${main['no_cache']['session_total']:.6f} |")
+    lines.append(f"| Monthly | ${main['with_cache']['monthly_total']:,.2f} | ${main['no_cache']['monthly_total']:,.2f} |")
+    lines.append(f"| Annual | ${main['with_cache']['annual_total']:,.2f} | ${main['no_cache']['annual_total']:,.2f} |")
+    savings_monthly = main["no_cache"]["monthly_total"] - main["with_cache"]["monthly_total"]
+    lines.append(f"| **Savings** | **${savings_monthly:,.2f}/month ({savings_pct:.1f}%)** | — |")
+    lines.append("")
+
+    # TTL Recommendation
+    lines.append("### TTL Recommendation")
+    lines.append("")
+    lines.append("| Parameter | Value |")
+    lines.append("|-----------|-------|")
+    lines.append(f"| Recommended TTL | {exp['ttl_recommendation']['recommended']} |")
+    lines.append(f"| Sessions per hour | {exp['ttl_recommendation']['sessions_per_hour']} |")
+    lines.append(f"| Avg gap between sessions | {exp['ttl_recommendation']['avg_gap_minutes']} min |")
+    lines.append(f"| Reason | {exp['ttl_recommendation']['reason']} |")
+    lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 9: Capacity Detailed Calculations
+    # ═══════════════════════════════════════════════════════════════
+    if cap_result and tier_limits:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Capacity Detailed Calculations")
+        lines.append("")
+
+        # Capacity Profile Derivation Table
+        cap_profile = r.get("capacity_profile", {})
+        lines.append(_format_capacity_profile_table(cap_profile))
+        lines.append("")
+
+        # Tier Limits
+        lines.append("### Tier Limits")
+        lines.append("")
+        lines.append("| Metric | Limit |")
+        lines.append("|--------|-------|")
+        lines.append(f"| RPM | {tier_limits['rpm_high']:,.0f} |")
+        lines.append(f"| TPM | {tier_limits['tpm_high']:,.0f} |")
+        lines.append(f"| TPD | {tier_limits['tpd_high']:,.0f} |")
+        lines.append("")
+
+        # Assumptions
+        lines.append("### Assumptions")
+        lines.append("")
+        lines.append("| Parameter | Value |")
+        lines.append("|-----------|-------|")
+        for k, v in cap_result.get("assumptions", {}).items():
+            label = k.replace("_", " ").title()
+            lines.append(f"| {label} | {v} |")
+        lines.append("")
+
+        # RPM
+        lines.append("### RPM Calculation")
+        lines.append("")
+        lines.append("| Step | Value |")
+        lines.append("|------|-------|")
+        for k, v in cap_result.get("explanation", {}).get("rpm_calculation", {}).items():
+            lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
+        lines.append("")
+
+        # TPM
+        lines.append("### TPM Calculation")
+        lines.append("")
+        lines.append("| Step | Value |")
+        lines.append("|------|-------|")
+        for k, v in cap_result.get("explanation", {}).get("tpm_calculation", {}).items():
+            lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
+        lines.append("")
+
+        # TPD
+        lines.append("### TPD Calculation")
+        lines.append("")
+        lines.append("| Step | Value |")
+        lines.append("|------|-------|")
+        for k, v in cap_result.get("explanation", {}).get("tpd_calculation", {}).items():
+            lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def generate_model_markdown(results):
@@ -733,6 +2994,7 @@ def refresh_cache(output_dir):
     except ImportError:
         print("ERROR: boto3 is required for refresh mode. Install with: pip install boto3", file=sys.stderr)
         sys.exit(1)
+    os.makedirs(output_dir, exist_ok=True)
     client = boto3.client("pricing", region_name="us-east-1")
     for sc, filename in CACHE_FILES.items():
         filepath = os.path.join(output_dir, filename)
@@ -765,6 +3027,8 @@ def refresh_quotas(output_dir, regions=None):
         print("ERROR: boto3 is required for quota refresh. Install with: pip install boto3", file=sys.stderr)
         return
 
+    os.makedirs(output_dir, exist_ok=True)
+
     if regions is None:
         regions = [
             "us-east-1",
@@ -791,51 +3055,72 @@ def refresh_quotas(output_dir, regions=None):
         print(f"Fetching quotas for {region}...", file=sys.stderr)
         try:
             client = boto3.client("service-quotas", region_name=region)
-            paginator = client.get_paginator("list_service_quotas")
+            region_quotas = []
             region_count = 0
+            max_attempts = 2
 
-            for page in paginator.paginate(ServiceCode="bedrock"):
-                for quota in page.get("Quotas", []):
-                    name = quota.get("QuotaName", "")
-                    name_lower = name.lower()
+            for attempt in range(1, max_attempts + 1):
+                region_quotas = []
+                region_count = 0
 
-                    # Determine quota type
-                    quota_type = None
-                    if any(kw in name_lower for kw in RPM_KEYWORDS):
-                        quota_type = "RPM"
-                    elif any(kw in name_lower for kw in TPM_KEYWORDS):
-                        quota_type = "TPM"
-                    elif any(kw in name_lower for kw in TPD_KEYWORDS):
-                        quota_type = "TPD"
+                try:
+                    paginator = client.get_paginator("list_service_quotas")
+                    for page in paginator.paginate(ServiceCode="bedrock"):
+                        for quota in page.get("Quotas", []):
+                            name = quota.get("QuotaName", "")
+                            name_lower = name.lower()
 
-                    if quota_type is None:
+                            # Determine quota type
+                            quota_type = None
+                            if any(kw in name_lower for kw in RPM_KEYWORDS):
+                                quota_type = "RPM"
+                            elif any(kw in name_lower for kw in TPM_KEYWORDS):
+                                quota_type = "TPM"
+                            elif any(kw in name_lower for kw in TPD_KEYWORDS):
+                                quota_type = "TPD"
+
+                            if quota_type is None:
+                                continue
+
+                            # Determine inference type from name
+                            inference_type = "On-demand"
+                            if "global cross-region" in name_lower:
+                                inference_type = "Global"
+                            elif "cross-region" in name_lower:
+                                inference_type = "Cross-region"
+                            elif "latency-optimized" in name_lower:
+                                inference_type = "Latency-optimized"
+                            elif "custom model" in name_lower or "model customization" in name_lower:
+                                inference_type = "Custom-model"
+
+                            entry = {
+                                "region": region,
+                                "quota_name": name,
+                                "quota_code": quota.get("QuotaCode", ""),
+                                "value": quota.get("Value", 0),
+                                "unit": quota.get("Unit", ""),
+                                "adjustable": quota.get("Adjustable", False),
+                                "quota_type": quota_type,
+                                "inference_type": inference_type,
+                                "service_code": quota.get("ServiceCode", "bedrock"),
+                            }
+                            region_quotas.append(entry)
+                            region_count += 1
+                except client.exceptions.InvalidPaginationTokenException:
+                    if attempt < max_attempts:
+                        print(f"  Pagination token error, retrying {region} in 2s...", file=sys.stderr)
+                        time.sleep(2)
                         continue
+                    else:
+                        # Keep partial data from this final attempt
+                        err_msg = f"Pagination error in {region} after {max_attempts} attempts (partial data kept: {region_count} quotas)"
+                        print(f"  WARNING: {err_msg}", file=sys.stderr)
+                        errors.append(err_msg)
 
-                    # Determine inference type from name
-                    inference_type = "On-demand"
-                    if "global cross-region" in name_lower:
-                        inference_type = "Global"
-                    elif "cross-region" in name_lower:
-                        inference_type = "Cross-region"
-                    elif "latency-optimized" in name_lower:
-                        inference_type = "Latency-optimized"
-                    elif "custom model" in name_lower or "model customization" in name_lower:
-                        inference_type = "Custom-model"
+                # Success or final attempt — exit retry loop
+                break
 
-                    entry = {
-                        "region": region,
-                        "quota_name": name,
-                        "quota_code": quota.get("QuotaCode", ""),
-                        "value": quota.get("Value", 0),
-                        "unit": quota.get("Unit", ""),
-                        "adjustable": quota.get("Adjustable", False),
-                        "quota_type": quota_type,
-                        "inference_type": inference_type,
-                        "service_code": quota.get("ServiceCode", "bedrock"),
-                    }
-                    all_quotas.append(entry)
-                    region_count += 1
-
+            all_quotas.extend(region_quotas)
             print(f"  Found {region_count} RPM/TPM/TPD quotas in {region}", file=sys.stderr)
 
         except Exception as e:
@@ -881,12 +3166,14 @@ def query_quotas(cache_dir, region_filter=None, model_filter=None, quota_type_fi
     """
     filepath = os.path.join(cache_dir, QUOTAS_CACHE_FILE)
     if not os.path.exists(filepath):
-        filepath = os.path.expanduser(f"~/{QUOTAS_CACHE_FILE}")
-    if not os.path.exists(filepath):
         return []
 
-    with open(filepath, "r") as f:
-        data = json.load(f)
+    try:
+        with open(filepath, "r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Warning: Failed to load {filepath}: {e}", file=sys.stderr)
+        return []
 
     results = data.get("quotas", [])
 
@@ -905,8 +3192,7 @@ def query_quotas(cache_dir, region_filter=None, model_filter=None, quota_type_fi
 def main():
     parser = argparse.ArgumentParser(description="Fetch Bedrock & AgentCore pricing")
     parser.add_argument("--refresh", action="store_true", help="Refresh cache from AWS Pricing API")
-    parser.add_argument("--output-dir", type=str, default=os.path.expanduser("~"), help="Dir to save cache files")
-    parser.add_argument("--cache-dir", type=str, default=os.path.expanduser("~"), help="Dir to read cache files")
+    parser.add_argument("--cache-dir", type=str, default=os.path.expanduser("~/bedrock_cache"), help="Dir to read cache files")
     parser.add_argument("--quota-regions", type=str,
                         default="us-east-1,us-west-2,eu-west-1,eu-central-1,ap-northeast-1,ap-southeast-1,ap-southeast-2,ap-south-1,ca-central-1,sa-east-1",
                         help="Comma-separated regions for quota refresh (default: 10 major Bedrock regions)")
@@ -918,8 +3204,9 @@ def main():
     parser.add_argument("--json", action="store_true", default=False, help="Output raw JSON")
     parser.add_argument("--skip-quotas", action="store_true", default=False, help="Skip quota refresh (pricing only)")
     args = parser.parse_args()
+    cache_dir = os.path.expanduser("~/bedrock_cache")
     if args.refresh:
-        refresh_cache(args.output_dir)
+        refresh_cache(cache_dir)
         if not args.skip_quotas:
             if args.all_regions:
                 # Fetch quotas for all known Bedrock regions
@@ -935,7 +3222,7 @@ def main():
                 print(f"Fetching quotas for ALL {len(quota_regions)} regions...", file=sys.stderr)
             else:
                 quota_regions = [r.strip() for r in args.quota_regions.split(",") if r.strip()]
-            refresh_quotas(args.output_dir, regions=quota_regions)
+            refresh_quotas(cache_dir, regions=quota_regions)
         return
     model_results = query_model_pricing(args.cache_dir, args.region, args.provider, args.model)
     agentcore_results = []
@@ -1120,61 +3407,282 @@ def calculate_evaluation_cost(
     }
 
 
-# ── Tier RPM/TPM ranges (approximate, from AWS docs) ──
-TIER_LIMITS = {
-    "Flex":     {"rpm_low": 10,  "rpm_high": 100,  "tpm_low": 5_000,   "tpm_high": 50_000},
-    "Standard": {"rpm_low": 100, "rpm_high": 500,  "tpm_low": 50_000,  "tpm_high": 150_000},
-    "Priority": {"rpm_low": 500, "rpm_high": 1000, "tpm_low": 150_000, "tpm_high": 300_000},
-}
+def build_capacity_profile_from_tokens(token_result, sessions_per_month, model_name=None, sub_agents=None):
+    """Build a capacity_profile dict from calculate_compounded_tokens_for_agent() output.
+
+    Use this when computing capacity directly (without going through the cost function).
+    The cost function already outputs capacity_profile — use that instead if available.
+
+    Args:
+        token_result (dict): Output from calculate_compounded_tokens_for_agent(detail_level="full").
+        sessions_per_month (int): Monthly session volume. Embedded in the profile
+            so that aggregate_capacity_by_model() can derive questions_per_month
+            automatically.
+        model_name (str|None): Model name for quota lookup (e.g., "Claude Sonnet 4.6").
+        sub_agents (list|None): Optional list of sub-agent profiles. Each dict:
+            "type" (str): "rag" or "research".
+            "model_name" (str): Sub-agent model name.
+            "token_result" (dict): Output from calculate_rag_subagent_tokens() or
+                calculate_research_subagent_tokens() with detail_level="full".
+            "invocations_per_session" (int): How many times invoked per session.
+
+    Returns:
+        dict: capacity_profile with "sessions_per_month", "main_agent", and
+        "sub_agents" keys, ready for check_capacity_fit() or
+        aggregate_capacity_by_model().
+    """
+    session_data = token_result.get("session")
+    if session_data is None:
+        raise ValueError(
+            "token_result must contain 'session' key (per-question cycle data). "
+            "This requires calling calculate_compounded_tokens_for_agent(detail_level='full'). "
+            "The default detail_level='summary' omits the session data needed here."
+        )
+    assumptions = token_result.get("assumptions")
+    if assumptions is None or "cycles_per_question" not in assumptions:
+        raise ValueError(
+            "token_result must contain 'assumptions' with 'cycles_per_question'. "
+            "Ensure calculate_compounded_tokens_for_agent(detail_level='full') was used."
+        )
+    questions_per_session = len(session_data)
+    cycles_per_question = assumptions["cycles_per_question"]
+    total_calls = questions_per_session * cycles_per_question
+    total_input = sum(q["question_total_input"] for q in session_data)
+    total_output = sum(q["question_total_output"] for q in session_data)
+
+    profile = {
+        "sessions_per_month": sessions_per_month,
+        "main_agent": {
+            "model_name": model_name,
+            "llm_calls_per_question": cycles_per_question,
+            "avg_input_tokens_per_call": total_input / total_calls if total_calls > 0 else 0,
+            "avg_output_tokens_per_call": total_output / total_calls if total_calls > 0 else 0,
+            "tokens_per_question": (total_input + total_output) / questions_per_session if questions_per_session > 0 else 0,
+            "questions_per_session": questions_per_session,
+        },
+        "sub_agents": [],
+    }
+
+    if sub_agents:
+        for sa in sub_agents:
+            sa_token_result = sa["token_result"]
+            sa_cycles = sa_token_result.get("cycles", [])
+            llm_calls = len(sa_cycles) if sa_cycles else 1
+            sa_total_input = sa_token_result.get("total_input", sa_token_result.get("total_input_tokens", 0))
+            sa_total_output = sa_token_result.get("total_output", sa_token_result.get("total_output_tokens", 0))
+
+            profile["sub_agents"].append({
+                "type": sa.get("type", "unknown"),
+                "model_name": sa.get("model_name"),
+                "llm_calls_per_invocation": llm_calls,
+                "invocations_per_session": sa.get("invocations_per_session", 1),
+                "avg_input_tokens_per_call": sa_total_input / llm_calls if llm_calls > 0 else 0,
+                "avg_output_tokens_per_call": sa_total_output / llm_calls if llm_calls > 0 else 0,
+                "tokens_per_invocation": sa_total_input + sa_total_output,
+            })
+
+    return profile
+
+
+def get_tier_limits_for_model(cache_dir, model_name, region):
+    """Look up RPM/TPM/TPD quota limits for a model from bedrock_quotas.json.
+
+    Queries all quota types and returns the highest limit for each (across inference types).
+    Returns None if no quotas are found for the model/region.
+
+    Args:
+        cache_dir (str): Path to cache directory (e.g., ~/bedrock_cache).
+        model_name (str): Model name to search for (e.g., "Claude Sonnet 4.6").
+        region (str): AWS region (e.g., "us-west-2").
+
+    Returns:
+        dict|None: {"rpm_high": N, "tpm_high": N, "tpd_high": N} or None if not found.
+        Keys with no data are omitted (e.g., no "tpd_high" if model has no TPD quota).
+    """
+    rpm_quotas = query_quotas(cache_dir, model_filter=model_name, region_filter=region, quota_type_filter="RPM")
+    tpm_quotas = query_quotas(cache_dir, model_filter=model_name, region_filter=region, quota_type_filter="TPM")
+    tpd_quotas = query_quotas(cache_dir, model_filter=model_name, region_filter=region, quota_type_filter="TPD")
+
+    rpm_high = max((q["value"] for q in rpm_quotas), default=None)
+    tpm_high = max((q["value"] for q in tpm_quotas), default=None)
+    tpd_high = max((q["value"] for q in tpd_quotas), default=None)
+
+    # Must have BOTH RPM and TPM to be useful for check_capacity_fit()
+    if rpm_high is None or tpm_high is None:
+        return None
+
+    result = {"rpm_high": rpm_high, "tpm_high": tpm_high}
+    if tpd_high is not None:
+        result["tpd_high"] = tpd_high
+
+    return result
+
+
+# ── No hardcoded tier limits. Always use real quotas from bedrock_quotas.json ──
+# Pass actual RPM/TPM limits via tier_limits parameter (from query_quotas()).
+# If not provided, the function will report that limits could not be found.
+
+
+def aggregate_capacity_by_model(capacity_profile):
+    """Aggregate capacity_profile entries by model for per-model fit checks.
+
+    When main agent and sub-agents use the same model, their RPM/TPM/TPD load
+    must be summed before checking against that model's shared quota.
+
+    Args:
+        capacity_profile (dict): From calculate_agent_session_compounded_cost() or
+            build_capacity_profile_from_tokens(). Must contain "sessions_per_month",
+            "main_agent", and "sub_agents" keys.
+
+    Returns:
+        dict: Keyed by model_name. Each value is a dict with:
+            "capacity_profile" (dict): Aggregated profile for check_capacity_fit().
+            "questions_per_month" (int): Total questions hitting this model per month.
+            "sessions_per_month" (int): Sessions per month.
+            "components" (list): Which agents contribute to this model's load.
+    """
+    from collections import defaultdict
+
+    main = capacity_profile["main_agent"]
+    sub_agents = capacity_profile.get("sub_agents", [])
+    main_model = main.get("model_name") or "main_agent_model"
+
+    # Derive sessions and questions from the profile
+    sessions_per_month = capacity_profile.get("sessions_per_month")
+    if sessions_per_month is None:
+        raise ValueError(
+            "capacity_profile must contain 'sessions_per_month'. "
+            "Use the capacity_profile from calculate_agent_session_compounded_cost() "
+            "or build_capacity_profile_from_tokens() which includes it automatically."
+        )
+
+    main_questions_per_session = main.get("questions_per_session", 5)
+    questions_per_month = sessions_per_month * main_questions_per_session
+
+    # Collect all load contributions per model
+    model_loads = defaultdict(lambda: {
+        "total_calls_per_session": 0,
+        "total_input_tokens_per_session": 0,
+        "total_output_tokens_per_session": 0,
+        "total_tokens_per_session": 0,
+        "questions_per_month": 0,
+        "components": [],
+    })
+
+    # Main agent contribution
+    main_calls_per_session = main["llm_calls_per_question"] * main_questions_per_session
+    main_input_per_session = main["avg_input_tokens_per_call"] * main_calls_per_session
+    main_output_per_session = main["avg_output_tokens_per_call"] * main_calls_per_session
+    main_tokens_per_session = main["tokens_per_question"] * main_questions_per_session
+
+    model_loads[main_model]["total_calls_per_session"] += main_calls_per_session
+    model_loads[main_model]["total_input_tokens_per_session"] += main_input_per_session
+    model_loads[main_model]["total_output_tokens_per_session"] += main_output_per_session
+    model_loads[main_model]["total_tokens_per_session"] += main_tokens_per_session
+    model_loads[main_model]["questions_per_month"] = questions_per_month
+    model_loads[main_model]["components"].append({"role": "main_agent", "model": main_model})
+
+    # Sub-agent contributions
+    for sa in sub_agents:
+        sa_model = sa.get("model_name") or f"sub_agent_{sa.get('type', 'unknown')}"
+        invocations_per_session = sa.get("invocations_per_session", 1)
+        calls_per_invocation = sa.get("llm_calls_per_invocation", 1)
+
+        sa_calls_per_session = calls_per_invocation * invocations_per_session
+        sa_input_per_session = sa["avg_input_tokens_per_call"] * sa_calls_per_session
+        sa_output_per_session = sa["avg_output_tokens_per_call"] * sa_calls_per_session
+        sa_tokens_per_session = sa.get("tokens_per_invocation", 0) * invocations_per_session
+
+        model_loads[sa_model]["total_calls_per_session"] += sa_calls_per_session
+        model_loads[sa_model]["total_input_tokens_per_session"] += sa_input_per_session
+        model_loads[sa_model]["total_output_tokens_per_session"] += sa_output_per_session
+        model_loads[sa_model]["total_tokens_per_session"] += sa_tokens_per_session
+        # Sub-agent questions = invocations per session * sessions
+        sa_questions = invocations_per_session * sessions_per_month
+        model_loads[sa_model]["questions_per_month"] += sa_questions
+        model_loads[sa_model]["components"].append({"role": f"sub_agent ({sa.get('type', '?')})", "model": sa_model})
+
+    # Build per-model capacity profiles for check_capacity_fit()
+    result = {}
+    for model_name, load in model_loads.items():
+        total_calls = load["total_calls_per_session"]
+        total_input = load["total_input_tokens_per_session"]
+        total_output = load["total_output_tokens_per_session"]
+        total_tokens = load["total_tokens_per_session"]
+
+        # Derive per-call averages
+        avg_input_per_call = total_input / total_calls if total_calls > 0 else 0
+        avg_output_per_call = total_output / total_calls if total_calls > 0 else 0
+
+        # For questions_per_month: if this model serves both main + sub-agent,
+        # we need the total "questions" (invocations) hitting this model
+        # For RPM: calls_per_session * sessions_per_month / active_minutes
+        # We express this as: effective_questions * calls_per_question
+        # where effective_questions = total_calls_per_session * sessions_per_month / calls_per_question
+        # Simplification: use calls_per_question = total_calls / questions_equivalent
+        questions_per_session_equiv = main_questions_per_session  # use main agent's session structure
+        calls_per_question_equiv = total_calls / questions_per_session_equiv if questions_per_session_equiv > 0 else total_calls
+
+        # tokens_per_question for TPD
+        tokens_per_question_equiv = total_tokens / questions_per_session_equiv if questions_per_session_equiv > 0 else total_tokens
+
+        result[model_name] = {
+            "capacity_profile": {
+                "llm_calls_per_question": calls_per_question_equiv,
+                "avg_input_tokens_per_call": avg_input_per_call,
+                "avg_output_tokens_per_call": avg_output_per_call,
+                "tokens_per_question": tokens_per_question_equiv,
+                "questions_per_session": questions_per_session_equiv,
+            },
+            "questions_per_month": questions_per_month,  # main agent's question volume drives the session rate
+            "sessions_per_month": sessions_per_month,
+            "components": load["components"],
+        }
+
+    return result
 
 
 def check_capacity_fit(
-    questions_per_month,
-    sessions_per_month,
+    capacity_profile,
     # Traffic profile
+    questions_per_month,
     peak_to_avg_ratio=3.0,             # peak RPM = avg RPM × this factor
     active_hours_per_day=12,           # hours with traffic (rest = 0)
     active_days_per_month=22,          # business days
-    # Agent config (same defaults as pricing)
-    tools_invoked=5,
-    input_tokens=100,
-    output_tokens=100,
-    system_prompt_tokens=1000,
-    tools_passed_to_agent=10,
-    tool_spec_tokens=100,
-    rag_chunks=10,
-    rag_tokens_per_chunk=300,
-    tool_call_tokens=100,
-    tool_result_tokens=100,
-    questions_per_session=5,
-    max_tokens_setting=4096,           # what max_tokens is set to in the API call
     # Model characteristics
     output_burndown_rate=1,            # 5 for Claude 3.7+, 1 for all others
-    # Tier to check against
-    tier="Standard",
-    tier_limits=None,                  # Optional: override default TIER_LIMITS dict
+    max_tokens_setting=4096,           # what max_tokens is set to in the API call
+    # Quota limits — must provide actual limits from query_quotas()
+    tier_limits=None,                  # Required: {"rpm_high": N, "tpm_high": N, "tpd_high": N (optional)} from quota cache
 ):
-    """Check if a workload fits within a Bedrock service tier's RPM/TPM limits.
+    """Check if a workload fits within Bedrock RPM/TPM/TPD quota limits.
+
+    Uses a capacity_profile (from calculate_agent_session_compounded_cost() or
+    calculate_compounded_tokens_for_agent()) as the source of token math.
+    Does NOT compute tokens internally — all token values come from the profile.
 
     Args:
-        questions_per_month, sessions_per_month (int): Workload volume.
+        capacity_profile (dict): Token profile for one model. Must contain:
+            "llm_calls_per_question" (int): LLM API calls per question.
+            "avg_input_tokens_per_call" (float): Average input tokens per API call.
+            "avg_output_tokens_per_call" (float): Average output tokens per API call.
+            "tokens_per_question" (float): Total tokens (in+out) per question.
+            "questions_per_session" (int): Questions per session.
+        questions_per_month (int): Total questions per month hitting this model.
         peak_to_avg_ratio (float): Peak multiplier (default 3.0).
         active_hours_per_day (int): Traffic hours (default 12).
         active_days_per_month (int): Business days (default 22).
-        tools_invoked, input/output_tokens, system_prompt_tokens,
-            tools_passed_to_agent, tool_spec_tokens, rag_chunks, rag_tokens_per_chunk,
-            tool_call/result_tokens: Token profile.
-        max_tokens_setting (int): API max_tokens (default 4096).
-        output_burndown_rate (int): Output TPM multiplier. 5 for Claude, 1 others.
-        tier (str): "Flex", "Standard", or "Priority".
-        tier_limits (dict | None): Override TIER_LIMITS. Each tier maps to
-            {rpm_low, rpm_high, tpm_low, tpm_high}.
+        output_burndown_rate (int): Output TPM multiplier. 5 for Claude 3.7+, 1 for others.
+        max_tokens_setting (int): API max_tokens parameter (default 4096).
+        tier_limits (dict | None): Required. Must contain {"rpm_high": N, "tpm_high": N}.
+            Optionally include "tpd_high": N for daily token limit.
+            If None, the function cannot perform a fit check.
 
     Returns:
-        dict: avg/peak_rpm, avg/peak/effective_peak_tpm (float),
-        fits (bool), rpm/tpm_fits (bool), rpm/tpm_utilization_pct (float),
+        dict: avg/peak_rpm, avg/peak/effective_peak_tpm, estimated_tpd,
+        fits (bool), rpm/tpm/tpd_fits (bool), utilization_pct (float),
         recommendations (list[str]), optimization_checklist (list[dict]),
-        explanation (dict): rpm_calculation, tpm_calculation, tier_comparison.
+        explanation (dict).
     """
     # Input validation
     if questions_per_month <= 0:
@@ -1183,103 +3691,155 @@ def check_capacity_fit(
         raise ValueError(f"active_hours_per_day must be > 0, got {active_hours_per_day}")
     if active_days_per_month <= 0:
         raise ValueError(f"active_days_per_month must be > 0, got {active_days_per_month}")
-    if tools_invoked > tools_passed_to_agent:
-        raise ValueError(f"tools_invoked ({tools_invoked}) cannot exceed tools_passed_to_agent ({tools_passed_to_agent})")
 
-    N = tools_invoked
+    # Validate tier_limits has required keys if provided
+    if tier_limits is not None:
+        missing = [k for k in ("rpm_high", "tpm_high") if k not in tier_limits]
+        if missing:
+            raise ValueError(
+                f"tier_limits must contain both 'rpm_high' and 'tpm_high'. "
+                f"Missing: {missing}. Use get_tier_limits_for_model() to obtain valid limits."
+            )
+
+    # Extract token values from capacity_profile
+    llm_calls_per_question = capacity_profile["llm_calls_per_question"]
+    avg_input_per_call = capacity_profile["avg_input_tokens_per_call"]
+    avg_output_per_call = capacity_profile["avg_output_tokens_per_call"]
+    tokens_per_question = capacity_profile["tokens_per_question"]
 
     # ── Compute average RPM ──
     active_minutes_per_month = active_hours_per_day * 60 * active_days_per_month
     avg_questions_per_min = questions_per_month / active_minutes_per_month
-    # Each question = N+1 LLM requests (1 initial + N tool calls)
-    avg_rpm = avg_questions_per_min * (N + 1)
+    avg_rpm = avg_questions_per_min * llm_calls_per_question
     peak_rpm = avg_rpm * peak_to_avg_ratio
 
     # ── Compute TPM ──
-    tool_desc_tokens = tools_passed_to_agent * tool_spec_tokens
-    base_context = input_tokens + system_prompt_tokens + tool_desc_tokens + rag_chunks * rag_tokens_per_chunk
-    # Average input tokens across all N+1 turns of a question:
-    # Sum = (N+1) × base_context + delta × N × (N+1) / 2
-    # Per-turn average = base_context + delta × N / 2
-    delta = (tool_call_tokens + tool_result_tokens)
-    avg_input_per_turn = base_context + (delta / 2) * N
-    # Average output per turn: tool call turns produce ~tool_call_tokens output (JSON),
-    # final turn produces the full output_tokens. Weighted average across N+1 turns.
-    avg_output_per_turn = (N * tool_call_tokens + output_tokens) // (N + 1) if N > 0 else output_tokens
-
-    # TPM at average load
-    avg_tpm_input = avg_rpm * avg_input_per_turn
-    avg_tpm_output = avg_rpm * avg_output_per_turn * output_burndown_rate
+    avg_tpm_input = avg_rpm * avg_input_per_call
+    avg_tpm_output = avg_rpm * avg_output_per_call * output_burndown_rate
     avg_tpm = avg_tpm_input + avg_tpm_output
 
     # TPM at peak
     peak_tpm = avg_tpm * peak_to_avg_ratio
 
     # max_tokens overhead: at request start, max_tokens is reserved
-    # This inflates effective TPM by (max_tokens - actual_output) per request
-    max_tokens_overhead_per_req = max_tokens_setting - avg_output_per_turn
+    # Clamp to 0 minimum (in case max_tokens < actual output)
+    max_tokens_overhead_per_req = max(0, max_tokens_setting - avg_output_per_call)
     effective_peak_tpm = peak_tpm + (peak_rpm * max_tokens_overhead_per_req)
 
+    # ── Compute TPD (tokens per day) ──
+    days_per_month = active_days_per_month
+    questions_per_day = questions_per_month / days_per_month
+    estimated_tpd = tokens_per_question * questions_per_day
+
     # ── Compare against tier ──
-    _tier_limits = tier_limits or TIER_LIMITS
-    limits = _tier_limits.get(tier, TIER_LIMITS["Standard"])
-    rpm_fits = peak_rpm <= limits["rpm_high"]
-    tpm_fits = peak_tpm <= limits["tpm_high"]
-    effective_tpm_fits = effective_peak_tpm <= limits["tpm_high"]
-    fits = rpm_fits and effective_tpm_fits
+    if tier_limits is None:
+        # No limits provided — cannot perform fit check
+        rpm_fits = None
+        tpm_fits = None
+        effective_tpm_fits = None
+        tpd_fits = None
+        fits = None
+        rpm_util = None
+        tpm_util = None
+        tpd_util = None
+        limits = {"rpm_high": None, "tpm_high": None, "tpd_high": None}
+        recommendations = [
+            "Could not find RPM/TPM limits for this model in the quota cache. "
+            "Run query_quotas() with the specific model and region to get actual limits, "
+            "then pass them via tier_limits={'rpm_high': N, 'tpm_high': N, 'tpd_high': N}."
+        ]
+    else:
+        limits = tier_limits
+        rpm_fits = peak_rpm <= limits["rpm_high"]
+        tpm_fits = peak_tpm <= limits["tpm_high"]
+        effective_tpm_fits = effective_peak_tpm <= limits["tpm_high"]
 
-    rpm_util = (peak_rpm / limits["rpm_high"]) * 100
-    tpm_util = (effective_peak_tpm / limits["tpm_high"]) * 100
+        # TPD check — optional, only if tpd_high is provided and > 0
+        tpd_limit = limits.get("tpd_high")
+        if tpd_limit is not None and tpd_limit > 0:
+            tpd_fits = estimated_tpd <= tpd_limit
+            tpd_util = (estimated_tpd / tpd_limit) * 100
+        else:
+            tpd_fits = None  # No TPD quota for this model
+            tpd_util = None
 
-    # ── Recommendations ──
-    recommendations = []
-    if not rpm_fits:
-        recommendations.append(f"Peak RPM ({peak_rpm:,.0f}) exceeds {tier} tier max ({limits['rpm_high']:,}). Consider Priority tier or quota increase.")
-    if not effective_tpm_fits and tpm_fits:
-        recommendations.append(f"Peak TPM fits ({peak_tpm:,.0f}) but effective TPM with max_tokens overhead ({effective_peak_tpm:,.0f}) exceeds limit. Reduce max_tokens from {max_tokens_setting:,} to ~{avg_output_per_turn * 2}.")
-    if not tpm_fits:
-        recommendations.append(f"Peak TPM ({peak_tpm:,.0f}) exceeds {tier} tier max ({limits['tpm_high']:,}). Consider Priority tier or quota increase.")
-    if output_burndown_rate > 1:
-        recommendations.append(f"Output burndown rate is {output_burndown_rate}× — each output token consumes {output_burndown_rate} TPM quota. Reducing output length has {output_burndown_rate}× impact.")
-    if fits:
-        recommendations.append(f"Workload fits within {tier} tier. RPM utilization: {rpm_util:.0f}%, TPM utilization: {tpm_util:.0f}%.")
+        fits = rpm_fits and effective_tpm_fits and (tpd_fits is not False)
 
-    # ── Optimization checklist (always returned) ──
+        rpm_util = (peak_rpm / limits["rpm_high"]) * 100 if limits["rpm_high"] > 0 else float('inf')
+        tpm_util = (effective_peak_tpm / limits["tpm_high"]) * 100 if limits["tpm_high"] > 0 else float('inf')
+
+        # ── Recommendations ──
+        recommendations = []
+        if not rpm_fits:
+            recommendations.append(f"Peak RPM ({peak_rpm:,.0f}) exceeds limit ({limits['rpm_high']:,}). Consider a quota increase.")
+        if not effective_tpm_fits and tpm_fits:
+            recommendations.append(f"Peak TPM fits ({peak_tpm:,.0f}) but effective TPM with max_tokens overhead ({effective_peak_tpm:,.0f}) exceeds limit. Reduce max_tokens from {max_tokens_setting:,} to ~{int(avg_output_per_call * 2)}.")
+        if not tpm_fits:
+            recommendations.append(f"Peak TPM ({peak_tpm:,.0f}) exceeds limit ({limits['tpm_high']:,}). Consider a quota increase.")
+        if tpd_fits is False:
+            recommendations.append(f"Estimated daily tokens ({estimated_tpd:,.0f}) exceeds TPD limit ({tpd_limit:,}). Reduce token volume or distribute across regions.")
+        if output_burndown_rate > 1:
+            recommendations.append(f"Output burndown rate is {output_burndown_rate}× — each output token consumes {output_burndown_rate} TPM quota. Reducing output length has {output_burndown_rate}× impact.")
+        if fits:
+            recommendations.append(f"Workload fits within limits. RPM utilization: {rpm_util:.0f}%, TPM utilization: {tpm_util:.0f}%.")
+
+    # ── Optimization checklist ──
     optimization_checklist = [
-        {"area": "RAG chunks", "current": f"{rag_chunks} chunks × {rag_tokens_per_chunk} = {rag_chunks * rag_tokens_per_chunk:,} tokens", "action": "Reduce chunks retrieved or tokens per chunk without quality loss"},
-        {"area": "System prompt", "current": f"{system_prompt_tokens:,} tokens", "action": "Shorten instructions, remove redundancy"},
-        {"area": "Prompt caching", "current": "Check if enabled", "action": "Cache reads do NOT count toward TPM — enable caching to free quota"},
-        {"area": "max_tokens", "current": f"{max_tokens_setting:,} (actual output ~{avg_output_per_turn})", "action": f"Reduce to ~{avg_output_per_turn * 3} to free {max_tokens_overhead_per_req:,} TPM/request"},
+        {"area": "Prompt caching", "current": "Check if enabled", "action": "Prompt cache reads do NOT count toward TPM — enable prompt caching to free quota"},
+        {"area": "max_tokens", "current": f"{max_tokens_setting:,} (actual output ~{int(avg_output_per_call)})", "action": f"Reduce to ~{int(avg_output_per_call * 3)} to free {int(max_tokens_overhead_per_req):,} TPM/request"},
+        {"area": "System prompt", "current": "Check size", "action": "Shorten instructions, remove redundancy — sent every turn, compounding"},
+        {"area": "Tool count", "current": "Check tool descriptions", "action": "Use AC Gateway dynamic tool selection to reduce tool descriptions per request"},
         {"area": "Conversation history", "current": "Included in context", "action": "Limit past Q&A turns packed as context"},
-        {"area": "Tool count", "current": f"{tools_passed_to_agent} tools × {tool_spec_tokens} = {tool_desc_tokens:,} tokens", "action": "Use AC Gateway dynamic tool selection to reduce tool descriptions per request"},
-        {"area": "Agent architecture", "current": f"Single agent, {tools_passed_to_agent} tools", "action": "Split into parent + sub-agents to reduce per-agent tool count and compounding"},
-        {"area": "Output length", "current": f"~{avg_output_per_turn} tokens" + (f" (×{output_burndown_rate} burndown)" if output_burndown_rate > 1 else ""), "action": "Constrain output with max_tokens and prompt instructions"},
+        {"area": "Sub-agent responses", "current": "Check response sizes", "action": "Reduce sub-agent output tokens — they compound in main agent context"},
+        {"area": "Output length", "current": f"~{int(avg_output_per_call)} tokens" + (f" (×{output_burndown_rate} burndown)" if output_burndown_rate > 1 else ""), "action": "Constrain output with max_tokens and prompt instructions"},
     ]
 
     # ── Build step-by-step explanation ──
-    explanation = {
-        "rpm_calculation": {
-            "active_minutes_per_month": f"{active_hours_per_day}h × 60 × {active_days_per_month}d = {_fmt(active_minutes_per_month)} min",
-            "avg_questions_per_min": f"{_fmt(questions_per_month)} questions ÷ {_fmt(active_minutes_per_month)} min = {avg_questions_per_min:.2f} Q/min",
-            "llm_calls_per_question": f"{N} tools + 1 = {N+1} LLM calls/question",
-            "avg_rpm": f"{avg_questions_per_min:.2f} Q/min × {N+1} calls = {avg_rpm:.1f} RPM",
-            "peak_rpm": f"{avg_rpm:.1f} × {peak_to_avg_ratio}× peak ratio = {peak_rpm:.0f} RPM",
-        },
-        "tpm_calculation": {
-            "base_context": f"{_fmt(input_tokens)} (user) + {_fmt(system_prompt_tokens)} (sys) + {_fmt(tool_desc_tokens)} (tools) + {_fmt(rag_chunks * rag_tokens_per_chunk)} (RAG) = {_fmt(base_context)}",
-            "avg_input_per_turn": f"{_fmt(base_context)} + {_fmt(int(delta // 2))} × {N} = {_fmt(avg_input_per_turn)} tokens",
-            "avg_tpm": f"{avg_rpm:.1f} RPM × ({_fmt(avg_input_per_turn)} in + {_fmt(avg_output_per_turn)}{'×' + str(output_burndown_rate) if output_burndown_rate > 1 else ''} out) = {_fmt(avg_tpm)} TPM",
-            "peak_tpm": f"{_fmt(avg_tpm)} × {peak_to_avg_ratio}× = {_fmt(peak_tpm)} TPM",
-            "max_tokens_overhead": f"max_tokens={_fmt(max_tokens_setting)} − actual_output={_fmt(avg_output_per_turn)} = {_fmt(max_tokens_overhead_per_req)} reserved/req",
-            "effective_peak_tpm": f"{_fmt(peak_tpm)} + ({peak_rpm:.0f} RPM × {_fmt(max_tokens_overhead_per_req)}) = {_fmt(effective_peak_tpm)} TPM",
-        },
-        "tier_comparison": {
-            "tier": tier,
+    if tier_limits is None:
+        tier_comparison = {
+            "rpm_limit": "NOT AVAILABLE — no quota data found",
+            "tpm_limit": "NOT AVAILABLE — no quota data found",
+            "tpd_limit": "NOT AVAILABLE — no quota data found",
+            "rpm_utilization": "N/A",
+            "tpm_utilization": "N/A",
+            "tpd_utilization": "N/A",
+        }
+    else:
+        tier_comparison = {
             "rpm_limit": f"{_fmt(limits['rpm_high'])} (peak: {peak_rpm:.0f} → {'✅ fits' if rpm_fits else '❌ exceeds'})",
             "tpm_limit": f"{_fmt(limits['tpm_high'])} (effective peak: {_fmt(effective_peak_tpm)} → {'✅ fits' if effective_tpm_fits else '❌ exceeds'})",
             "rpm_utilization": f"{rpm_util:.0f}%",
             "tpm_utilization": f"{tpm_util:.0f}%",
+        }
+        if tpd_limit is not None and tpd_limit > 0:
+            tier_comparison["tpd_limit"] = f"{_fmt(tpd_limit)} (estimated daily: {_fmt(estimated_tpd)} → {'✅ fits' if tpd_fits else '❌ exceeds'})"
+            tier_comparison["tpd_utilization"] = f"{tpd_util:.0f}%"
+        else:
+            tier_comparison["tpd_limit"] = "No TPD quota for this model"
+            tier_comparison["tpd_utilization"] = "N/A"
+
+    explanation = {
+        "rpm_calculation": {
+            "active_minutes_per_month": f"{active_hours_per_day}h × 60 × {active_days_per_month}d = {_fmt(active_minutes_per_month)} min",
+            "avg_questions_per_min": f"{_fmt(questions_per_month)} questions ÷ {_fmt(active_minutes_per_month)} min = {avg_questions_per_min:.2f} Q/min",
+            "llm_calls_per_question": f"{llm_calls_per_question} LLM calls/question (from capacity_profile)",
+            "avg_rpm": f"{avg_questions_per_min:.2f} Q/min × {llm_calls_per_question} calls = {avg_rpm:.1f} RPM",
+            "peak_rpm": f"{avg_rpm:.1f} × {peak_to_avg_ratio}× peak ratio = {peak_rpm:.0f} RPM",
         },
+        "tpm_calculation": {
+            "avg_input_per_call": f"{_fmt(avg_input_per_call)} tokens (from capacity_profile)",
+            "avg_output_per_call": f"{_fmt(avg_output_per_call)} tokens (from capacity_profile)",
+            "avg_tpm": f"{avg_rpm:.1f} RPM × ({_fmt(avg_input_per_call)} in + {_fmt(avg_output_per_call)}{'×' + str(output_burndown_rate) if output_burndown_rate > 1 else ''} out) = {_fmt(avg_tpm)} TPM",
+            "peak_tpm": f"{_fmt(avg_tpm)} × {peak_to_avg_ratio}× = {_fmt(peak_tpm)} TPM",
+            "max_tokens_overhead": f"max_tokens={_fmt(max_tokens_setting)} − actual_output={_fmt(avg_output_per_call)} = {_fmt(max_tokens_overhead_per_req)} reserved/req",
+            "effective_peak_tpm": f"{_fmt(peak_tpm)} + ({peak_rpm:.0f} RPM × {_fmt(max_tokens_overhead_per_req)}) = {_fmt(effective_peak_tpm)} TPM",
+        },
+        "tpd_calculation": {
+            "tokens_per_question": f"{_fmt(tokens_per_question)} tokens/question (from capacity_profile)",
+            "questions_per_day": f"{_fmt(questions_per_month)} questions/month ÷ {days_per_month} days = {_fmt(questions_per_day)} questions/day",
+            "estimated_tpd": f"{_fmt(tokens_per_question)} × {_fmt(questions_per_day)} = {_fmt(estimated_tpd)} tokens/day",
+        },
+        "tier_comparison": tier_comparison,
     }
 
     return {
@@ -1288,14 +3848,16 @@ def check_capacity_fit(
         "avg_tpm": avg_tpm,
         "peak_tpm": peak_tpm,
         "effective_peak_tpm": effective_peak_tpm,
+        "estimated_tpd": estimated_tpd,
         "max_tokens_overhead_per_req": max_tokens_overhead_per_req,
-        "tier": tier,
         "tier_limits": limits,
         "rpm_utilization_pct": rpm_util,
         "tpm_utilization_pct": tpm_util,
+        "tpd_utilization_pct": tpd_util,
         "fits": fits,
         "rpm_fits": rpm_fits,
         "tpm_fits": tpm_fits,
+        "tpd_fits": tpd_fits,
         "recommendations": recommendations,
         "optimization_checklist": optimization_checklist,
         "assumptions": {
@@ -1304,6 +3866,7 @@ def check_capacity_fit(
             "active_days_per_month": active_days_per_month,
             "active_minutes_per_month": active_minutes_per_month,
             "output_burndown_rate": output_burndown_rate,
+            "max_tokens_setting": max_tokens_setting,
         },
         "explanation": explanation,
     }

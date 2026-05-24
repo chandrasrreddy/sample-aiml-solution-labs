@@ -47,7 +47,7 @@ if not os.path.exists(_p):
     _p = os.path.expanduser("~/.quickwork/skills/bedrock-pricing/scripts/bedrock_pricing.py")
 exec(open(_p).read())
 
-home = os.path.expanduser("~")
+home = os.path.expanduser("~/bedrock_cache")
 results = query_model_pricing(home, region_filter="us-east-1", model_filter="Claude Sonnet 4.6")
 all_prices = extract_bedrock_model_prices(results, all_tiers=True)
 # Returns: {"Standard Global": {...}, "Standard Regional": {...}, "Batch Global": {...}, ...}
@@ -58,12 +58,12 @@ Match the user's workload characteristics against the guidance:
 
 | User Says | Recommend |
 |-----------|-----------|
-| "production agent" / "customer-facing" | Standard Global (with caching if available) |
+| "production agent" / "customer-facing" | Standard Global (with prompt caching if available) |
 | "dev/test" / "experimenting" | Flex if available, else Standard |
 | "mission-critical" / "can't tolerate latency" | Priority if available, else Standard |
 | "bulk processing" / "offline" / "not real-time" | Batch |
 | "data must stay in region" / "compliance" | Regional variant |
-| No preference stated | Standard Global (cheapest on-demand with caching) |
+| No preference stated | Standard Global (cheapest on-demand with prompt caching) |
 
 ### Step 4: Present Recommendation
 Show the recommended tier + variant with reasoning, and list alternatives with trade-offs.
