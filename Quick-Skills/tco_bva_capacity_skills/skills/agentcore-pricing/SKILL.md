@@ -13,7 +13,7 @@ description: >
 
 ## Critical Rules
 
-- **NEVER use training data for prices.** All prices must come from cached JSON files at runtime.
+- **NEVER use training data for prices.** All prices must come from the local pricing cache files at runtime.
 - **NEVER implement billing formulas manually.** Always use `calculate_agentcore_cost()` and `calculate_evaluation_cost()`.
 - **Only include components explicitly requested.** If user says "run in AC Runtime," add ONLY Runtime — do not auto-add Gateway, Memory, etc.
 - **STM reads are free** — only writes are billed.
@@ -21,7 +21,7 @@ description: >
 
 ## Prerequisites
 
-- Cache file `~/bedrock_pricing_agentcore.json` must exist
+- Cache file `~/bedrock_cache/bedrock_pricing_agentcore.json` must exist
 - If missing or stale (>7 days), instruct user to refresh:
   ```bash
   # If USE_IN_KIRO or USE_IN_CLAUDE_CODE is set:
@@ -53,10 +53,21 @@ if not os.path.exists(script):
 exec(open(script).read())
 ```
 
+### 1b. Check Pricing Data Freshness (once per session)
+
+```python
+cache_status = check_pricing_data_status()
+```
+
+**Handle by status:**
+- `"ok"` — proceed normally.
+- `"stale"` — warn the user that cache is older than 7 days, suggest refresh, but proceed with available data.
+- `"partial"` or `"missing"` — if `bedrock_pricing_agentcore.json` is in `cache_status["missing"]`, **stop**. Tell the user to run `cache_status["refresh_command"]` and do not attempt queries.
+
 ### 2. Look Up AgentCore Prices
 
 ```python
-home = os.path.expanduser("~")
+home = os.path.expanduser("~/bedrock_cache")
 ac_prices = query_agentcore_pricing(home, region_filter="us-east-1")
 ```
 
@@ -139,7 +150,7 @@ When user describes parent + sub-agents, calculate model inference for **each ag
 | Agent | Default Config |
 |-------|---------------|
 | **Parent (router)** | All questions, no tools, cheap model (Nova Lite), 1 turn/Q |
-| **Sub-agents** | Their fraction of questions, own model/tools/caching profile |
+| **Sub-agents** | Their fraction of questions, own model/tools/prompt caching profile |
 | **Shared Runtime** | Scale vCPU/memory proportionally (e.g., 3 agents × 2 vCPU = 6 vCPU) |
 
 Present each agent's cost individually, then sum for the architecture total.
