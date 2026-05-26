@@ -231,15 +231,29 @@ Fill in with actual values from the estimate:
 | Consumption trajectory? | Increases granted after demonstrating usage |
 | Target at 1 / 3 / 6 months? | Aligns allocation with growth |
 
-## Defaults
+## Configuration
 
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| Output burndown rate | 5x (Claude 3.7+) | 1x for all other models |
-| max_tokens setting | 4,096 | Check for waste, reduce if actual output is small |
-| Peak-to-average ratio | 3.0x | Peak = 3x average during active hours |
-| Active hours/day | 12 | Ask user to validate |
-| Active days/month | 22 | Business days |
+Capacity planning defaults are managed by the YAML configuration system in `bedrock_pricing.py`.
+Override any default via `~/.bedrock_skills/config.yaml` (user-level) or `./.bedrock_skills.yaml` (project-level).
+
+Run `python3 bedrock_pricing.py --init-config` to generate a commented template showing all
+available settings with their current defaults.
+
+**Precedence:** function parameter > environment variable > project config > user config > hardcoded default
+
+**Config values are defaults only.** If the user specifies a value in their prompt, always use
+the user's value. Config defaults apply only to parameters the user has not mentioned.
+
+See the `capacity` section in the config template for overridable settings:
+`peak_to_avg_ratio`, `active_hours_per_day`, `active_days_per_month`, `max_tokens_setting`.
+
+| Parameter | Notes |
+|-----------|-------|
+| Output burndown rate | 5x for Claude 3.7+, 1x for all other models |
+| max_tokens setting | Check for waste — reduce if actual output is small |
+| Peak-to-average ratio | Peak = Nx average during active hours |
+| Active hours/day | Ask user to validate |
+| Active days/month | Business days |
 
 ## Explanation Rendering
 

@@ -93,6 +93,23 @@ The `bedrock-tier-guidance.md` file should be refreshed when AWS updates their t
 >
 > Update `bedrock-tier-guidance.md` with any changes. Preserve the file structure and source citations."
 
+## Configuration
+
+Model preferences and tier defaults are managed by the YAML configuration system in `bedrock_pricing.py`.
+Override any default via `~/.bedrock_skills/config.yaml` (user-level) or `./.bedrock_skills.yaml` (project-level).
+
+Run `python3 bedrock_pricing.py --init-config` to generate a commented template showing all
+available settings with their current defaults.
+
+**Precedence:** function parameter > environment variable > project config > user config > hardcoded default
+
+**Config values are defaults only.** If the user specifies a value in their prompt, always use
+the user's value. Config defaults apply only to parameters the user has not mentioned.
+
+Relevant config sections:
+- `model_preferences` — default model selections by agent role (router, general, rag, research) and version
+- `defaults.tier_preference` — preferred service tier when user doesn't specify
+
 ## Lessons Learned
 
 ### Do
