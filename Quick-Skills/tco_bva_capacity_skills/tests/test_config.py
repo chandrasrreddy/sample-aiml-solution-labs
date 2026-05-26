@@ -89,7 +89,7 @@ def test_schema_and_utilities():
     _, w = _validate_config({"unknown_section": {"key": 1}}, "test.yaml")
     _assert(any("unrecognized" in x.lower() or "unknown" in x.lower() for x in w), "_validate unknown section")
 
-    _, w = _validate_config({"behavior": {"detail_level": "invalid"}}, "test.yaml")
+    _, w = _validate_config({"defaults": {"history_mode": "invalid"}}, "test.yaml")
     _assert(any("not valid" in x.lower() or "options" in x.lower() for x in w), "_validate invalid choice")
 
     _, w = _validate_config({"capacity": {"peak_to_avg_ratio": 0.5}}, "test.yaml")
@@ -571,8 +571,8 @@ def test_error_handling():
     _assert(len(w) > 0, "input_tokens=0 produces warning (min is 1)")
 
     # Invalid choice
-    v, w = _validate_config({"behavior": {"detail_level": "verbose"}}, "t.yaml")
-    _assert(len(w) > 0, "detail_level='verbose' produces warning")
+    v, w = _validate_config({"reports": {"format": "xml"}}, "t.yaml")
+    _assert(len(w) > 0, "format='xml' produces warning")
 
     v, w = _validate_config({"defaults": {"history_mode": "partial"}}, "t.yaml")
     _assert(len(w) > 0, "history_mode='partial' produces warning")
