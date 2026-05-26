@@ -78,6 +78,546 @@ PROVIDER_RULES = [
 ]
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════════
+# Provides YAML-based config file support with layered precedence:
+#   function parameter > environment variable > project config > user config > hardcoded default
+#
+# Config files:
+#   User-level:    ~/.bedrock_skills/config.yaml
+#   Project-level: ./.bedrock_skills.yaml
+#
+# Run: python3 bedrock_pricing.py --init-config  to generate a commented template.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Try to import PyYAML — required for config file parsing
+try:
+    import yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _YAML_AVAILABLE = False
+
+# Single source of truth for all config sections, keys, types, defaults, and validation rules.
+# Used by: load_config(), _validate_config(), resolve_setting(), generate_config_template()
+CONFIG_SCHEMA = {
+    "reports": {
+        "_description": "Configure report output preferences (used by file-based report output feature)",
+        "output_dir": {"type": str, "default": "~/bedrock_reports", "description": "Directory for report files"},
+        "format": {"type": str, "default": "markdown", "choices": ["markdown", "json", "csv"], "description": "Report output format"},
+        "retention_days": {"type": int, "default": 30, "min": 1, "max": 3650, "description": "Days to keep old reports before auto-cleanup"},
+        "naming_template": {"type": str, "default": "{model}_{volume}_{timestamp}.md", "max_len": 128, "description": "Report filename template. Placeholders: {model}, {volume}, {timestamp}, {region}, {format}"},
+        "include_metadata": {"type": bool, "default": True, "description": "Include YAML front-matter metadata in reports"},
+        "auto_cleanup": {"type": bool, "default": False, "description": "Automatically delete reports older than retention_days"},
+    },
+    "defaults": {
+        "_description": "General defaults for region, tier, and history mode",
+        "region": {"type": str, "default": None, "description": "Default AWS region for pricing queries (e.g., us-west-2)"},
+        "tier_preference": {"type": str, "default": None, "description": "Preferred service tier (e.g., Standard, Priority, Flex)"},
+        "history_mode": {"type": str, "default": "full", "choices": ["full", "condensed"], "description": "How conversation history is carried across questions"},
+    },
+    "agent_defaults": {
+        "_description": "Default token parameters for main agent cost calculations",
+        "questions_per_session": {"type": int, "default": 5, "min": 1, "description": "Questions per agent session"},
+        "input_tokens": {"type": int, "default": 100, "min": 1, "description": "User question tokens per question"},
+        "output_tokens": {"type": int, "default": 150, "min": 1, "description": "Agent final answer tokens per question"},
+        "system_prompt_tokens": {"type": int, "default": 2000, "min": 1, "description": "System prompt tokens (sent every LLM call)"},
+        "tools_passed": {"type": int, "default": 10, "min": 0, "description": "Number of tools in agent schema"},
+        "tool_spec_tokens": {"type": int, "default": 100, "min": 1, "description": "Tokens per tool specification"},
+        "tools_invoked": {"type": int, "default": 5, "min": 0, "description": "Tool calls per question"},
+        "tool_call_tokens": {"type": int, "default": 100, "min": 1, "description": "Model output tokens per tool call"},
+        "tool_result_tokens": {"type": int, "default": 100, "min": 1, "description": "Tokens per tool result returned to agent"},
+    },
+    "rag_defaults": {
+        "_description": "Default parameters for RAG sub-agent token calculations",
+        "system_prompt_tokens": {"type": int, "default": 500, "min": 1, "description": "RAG sub-agent system prompt tokens"},
+        "n_tools": {"type": int, "default": 2, "min": 0, "description": "Tools available to RAG sub-agent"},
+        "tool_spec_tokens": {"type": int, "default": 100, "min": 1, "description": "Tokens per tool spec in RAG sub-agent"},
+        "input_query_tokens": {"type": int, "default": 100, "min": 1, "description": "Query tokens from main agent to RAG"},
+        "tool_call_tokens": {"type": int, "default": 50, "min": 1, "description": "Model output per tool call in RAG sub-agent"},
+        "rag_n_retrieval_calls": {"type": int, "default": 2, "min": 1, "description": "Number of KB retrieval calls"},
+        "rag_n_chunks": {"type": int, "default": 10, "min": 1, "description": "Chunks returned per retrieval call"},
+        "rag_chunk_size": {"type": int, "default": 300, "min": 1, "description": "Tokens per RAG chunk"},
+        "n_other_tool_calls": {"type": int, "default": 1, "min": 0, "description": "Other tool calls (reranker, etc.)"},
+        "other_tool_result_tokens": {"type": int, "default": 200, "min": 1, "description": "Tokens per other tool result"},
+        "output_tokens": {"type": int, "default": 300, "min": 1, "description": "RAG response tokens returned to main agent"},
+    },
+    "research_defaults": {
+        "_description": "Default parameters for research sub-agent token calculations",
+        "system_prompt_tokens": {"type": int, "default": 500, "min": 1, "description": "Research sub-agent system prompt tokens"},
+        "n_tools": {"type": int, "default": 2, "min": 0, "description": "Tools available to research sub-agent (search, fetch)"},
+        "tool_spec_tokens": {"type": int, "default": 50, "min": 1, "description": "Tokens per tool spec in research sub-agent"},
+        "input_query_tokens": {"type": int, "default": 100, "min": 1, "description": "Query tokens from main agent to research"},
+        "tool_call_tokens": {"type": int, "default": 50, "min": 1, "description": "Model output per tool call in research sub-agent"},
+        "n_research_iterations": {"type": int, "default": 4, "min": 1, "description": "Search-then-optional-fetch cycles"},
+        "fetch_probability": {"type": float, "default": 0.5, "min": 0.0, "max": 1.0, "description": "Probability each search leads to a fetch (0.0-1.0)"},
+        "search_result_tokens": {"type": int, "default": 100, "min": 1, "description": "Tokens from web_search result"},
+        "fetch_result_tokens": {"type": int, "default": 2000, "min": 1, "description": "Tokens from web_fetch result"},
+        "output_tokens": {"type": int, "default": 1000, "min": 1, "description": "Research response tokens returned to main agent"},
+    },
+    "agentcore_defaults": {
+        "_description": "Default AgentCore infrastructure parameters for runtime cost calculations",
+        "num_vcpus": {"type": int, "default": 2, "min": 1, "description": "vCPUs allocated to agent runtime"},
+        "peak_memory_gb": {"type": float, "default": 4.0, "min": 0.5, "description": "Peak memory (GB) allocated to agent runtime"},
+        "io_wait_pct": {"type": float, "default": 0.70, "min": 0.0, "max": 1.0, "description": "Fraction of time spent in I/O wait (vCPU is free during wait)"},
+        "idle_time_between_questions_s": {"type": int, "default": 30, "min": 0, "description": "User think time between questions (seconds)"},
+        "stm_events_per_question": {"type": int, "default": 2, "min": 0, "description": "Short-term memory write events per question"},
+        "ltm_records_per_session": {"type": int, "default": 3, "min": 0, "description": "Long-term memory records extracted per session"},
+        "ltm_retrievals_per_question": {"type": int, "default": 1, "min": 0, "description": "Long-term memory retrievals per question"},
+        "tools_indexed": {"type": int, "default": 50, "min": 0, "description": "Number of tools indexed in Gateway (flat monthly fee)"},
+        "eval_sampling_rate": {"type": float, "default": 0.10, "min": 0.0, "max": 1.0, "description": "Fraction of sessions evaluated (0.0-1.0)"},
+        "eval_builtin_evaluators": {"type": int, "default": 3, "min": 0, "description": "Number of built-in evaluators (e.g., Helpfulness, Correctness, Safety)"},
+    },
+    "business_value_defaults": {
+        "_description": "Default assumptions for business value / ROI calculations",
+        "time_without_ai_min": {"type": float, "default": 20.0, "min": 0.1, "description": "Minutes per task without AI assistance"},
+        "time_with_ai_min": {"type": float, "default": 10.0, "min": 0.1, "description": "Minutes per task with AI assistance"},
+        "human_cost_per_hour": {"type": float, "default": 75.0, "min": 0.0, "description": "Fully-loaded human labor cost ($/hr)"},
+        "revenue_per_hour": {"type": float, "default": 300.0, "min": 0.0, "description": "Revenue per employee hour (for productivity dimension)"},
+        "agent_effectiveness_pct": {"type": float, "default": 0.65, "min": 0.0, "max": 1.0, "description": "Fraction of sessions where AI meaningfully helps (moderate tier)"},
+        "efficiency_factor_pct": {"type": float, "default": 0.60, "min": 0.0, "max": 1.0, "description": "Fraction of saved time converted to productive output"},
+        "churn_without_ai_pct": {"type": float, "default": 2.0, "min": 0.0, "description": "Monthly churn rate without AI (%)"},
+        "churn_with_ai_pct": {"type": float, "default": 1.0, "min": 0.0, "description": "Monthly churn rate with AI (%)"},
+        "sales_increase_pct": {"type": float, "default": 10.0, "min": 0.0, "description": "Sales increase from better CX (%)"},
+    },
+    "capacity": {
+        "_description": "Capacity planning assumptions for RPM/TPM/TPD fit checks",
+        "peak_to_avg_ratio": {"type": float, "default": 3.0, "min": 1.0, "max": 100.0, "description": "Peak-to-average traffic ratio during active hours"},
+        "active_hours_per_day": {"type": int, "default": 12, "min": 1, "max": 24, "description": "Hours per day with active traffic"},
+        "active_days_per_month": {"type": int, "default": 22, "min": 1, "max": 31, "description": "Business days per month with active traffic"},
+        "max_tokens_setting": {"type": int, "default": 4096, "min": 1, "max": 65536, "description": "max_tokens parameter reserved per request (affects TPM)"},
+    },
+    "pricing_cache": {
+        "_description": "Settings for the local pricing data cache (JSON files from AWS Pricing API)",
+        "dir": {"type": str, "default": "~/bedrock_cache", "description": "Directory for pricing cache files"},
+        "max_age_days": {"type": int, "default": 7, "min": 1, "max": 365, "description": "Days before cache files are considered stale"},
+        "auto_refresh": {"type": bool, "default": False, "description": "Automatically refresh stale cache before queries"},
+    },
+    "behavior": {
+        "_description": "Behavioral preferences for script execution",
+        "skip_confirmation": {"type": bool, "default": False, "description": "Skip interactive confirmation prompts before calculations"},
+        "auto_capacity_check": {"type": bool, "default": False, "description": "Automatically run capacity fit check after cost calculations"},
+        "detail_level": {"type": str, "default": "summary", "choices": ["summary", "full"], "description": "Default output detail level"},
+    },
+    "model_preferences": {
+        "_description": "Default model selections by agent role (search hints for query_model_pricing)",
+        "router": {"type": str, "default": "Claude Opus", "description": "Model for orchestrator/router agents"},
+        "general": {"type": str, "default": "Claude Sonnet", "description": "Model for main inference agents"},
+        "rag": {"type": str, "default": "Claude Haiku", "description": "Model for RAG sub-agents (cost-efficient)"},
+        "research": {"type": str, "default": "Nova Lite", "description": "Model for research sub-agents"},
+        "version": {"type": str, "default": "latest", "description": "Model version: 'latest' or pin to specific (e.g., '4.6')"},
+    },
+}
+
+# Module-level config state (loaded lazily on first access)
+_LOADED_CONFIG = None
+
+
+def _ensure_config_loaded():
+    """Load config on first access (lazy initialization)."""
+    global _LOADED_CONFIG
+    if _LOADED_CONFIG is None:
+        _LOADED_CONFIG = load_config()
+
+
+def _deep_merge(base, override):
+    """Recursively merge override into base. Override wins for leaf values.
+
+    Args:
+        base (dict): Base dictionary (e.g., user config).
+        override (dict): Override dictionary (e.g., project config). Wins at leaf level.
+
+    Returns:
+        dict: New merged dictionary. Neither input is mutated.
+    """
+    result = dict(base)
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
+def _read_yaml_file(path):
+    """Read and parse a YAML file using PyYAML.
+
+    Args:
+        path (str): Absolute or relative path to the YAML file.
+
+    Returns:
+        dict | None: Parsed YAML as dict, or None on error.
+        Emits warnings to stderr on parse errors or missing PyYAML.
+    """
+    if not _YAML_AVAILABLE:
+        print("⚠️  PyYAML is required for config file support. Install with: pip install pyyaml",
+              file=sys.stderr)
+        return None
+
+    if not os.path.exists(path):
+        return None
+
+    try:
+        with open(path, "r") as f:
+            content = f.read()
+    except PermissionError:
+        print(f"⚠️  Config: Permission denied reading '{path}'. Skipping.", file=sys.stderr)
+        return None
+    except OSError as e:
+        print(f"⚠️  Config: Cannot read '{path}': {e}. Skipping.", file=sys.stderr)
+        return None
+
+    # Handle empty files
+    if not content.strip():
+        return {}
+
+    try:
+        data = yaml.safe_load(content)
+        # yaml.safe_load returns None for empty/comment-only YAML
+        return data if isinstance(data, dict) else {}
+    except yaml.YAMLError as e:
+        # Extract line number if available
+        if hasattr(e, 'problem_mark') and e.problem_mark:
+            line = e.problem_mark.line + 1
+            print(f"⚠️  Config: Invalid YAML in '{path}' at line {line}: {e.problem}. Skipping file.",
+                  file=sys.stderr)
+        else:
+            print(f"⚠️  Config: Invalid YAML in '{path}': {e}. Skipping file.", file=sys.stderr)
+        return None
+
+
+def _validate_config(config, source_path):
+    """Validate a config dict against CONFIG_SCHEMA.
+
+    Checks for: unknown sections, type mismatches, out-of-range values, invalid choices.
+    Reports ALL errors (doesn't stop at first).
+
+    Args:
+        config (dict): Parsed config dictionary.
+        source_path (str): File path (for error messages).
+
+    Returns:
+        tuple[dict, list[str]]: (validated_config with invalid values removed, list of warning messages)
+    """
+    warnings = []
+    validated = {}
+
+    if not isinstance(config, dict):
+        warnings.append(f"Config '{source_path}': Expected a YAML mapping (dict), got {type(config).__name__}. Skipping.")
+        return {}, warnings
+
+    for section_name, section_data in config.items():
+        # Check if section is recognized
+        if section_name not in CONFIG_SCHEMA:
+            warnings.append(f"Config '{source_path}': Unrecognized section '{section_name}'. Ignoring.")
+            continue
+
+        if not isinstance(section_data, dict):
+            warnings.append(f"Config '{source_path}': Section '{section_name}' should be a mapping, got {type(section_data).__name__}. Ignoring.")
+            continue
+
+        schema_section = CONFIG_SCHEMA[section_name]
+        validated_section = {}
+
+        for key, value in section_data.items():
+            # Skip internal keys
+            if key.startswith("_"):
+                continue
+
+            # Check if key is recognized in this section
+            if key not in schema_section:
+                warnings.append(f"Config '{source_path}': Unknown key '{section_name}.{key}'. Ignoring.")
+                continue
+
+            field_spec = schema_section[key]
+            expected_type = field_spec["type"]
+
+            # Type check
+            if expected_type == float and isinstance(value, int):
+                value = float(value)  # Allow int where float expected
+            elif expected_type == int and isinstance(value, float) and value == int(value):
+                value = int(value)  # Allow 5.0 where int expected
+
+            if not isinstance(value, expected_type):
+                warnings.append(
+                    f"Config '{source_path}': '{section_name}.{key}' expected {expected_type.__name__}, "
+                    f"got {type(value).__name__} ({repr(value)}). Using default."
+                )
+                continue
+
+            # Range check (min)
+            if "min" in field_spec and isinstance(value, (int, float)):
+                if value < field_spec["min"]:
+                    warnings.append(
+                        f"Config '{source_path}': '{section_name}.{key}' = {value} is below minimum "
+                        f"{field_spec['min']}. Using default."
+                    )
+                    continue
+
+            # Range check (max)
+            if "max" in field_spec and isinstance(value, (int, float)):
+                if value > field_spec["max"]:
+                    warnings.append(
+                        f"Config '{source_path}': '{section_name}.{key}' = {value} is above maximum "
+                        f"{field_spec['max']}. Using default."
+                    )
+                    continue
+
+            # Choices check
+            if "choices" in field_spec and isinstance(value, str):
+                if value not in field_spec["choices"]:
+                    warnings.append(
+                        f"Config '{source_path}': '{section_name}.{key}' = '{value}' is not valid. "
+                        f"Options: {field_spec['choices']}. Using default."
+                    )
+                    continue
+
+            # Max length check (strings)
+            if "max_len" in field_spec and isinstance(value, str):
+                if len(value) > field_spec["max_len"]:
+                    warnings.append(
+                        f"Config '{source_path}': '{section_name}.{key}' exceeds max length "
+                        f"{field_spec['max_len']} (got {len(value)}). Using default."
+                    )
+                    continue
+
+            # Value passed all checks
+            validated_section[key] = value
+
+        if validated_section:
+            validated[section_name] = validated_section
+
+    return validated, warnings
+
+
+def load_config(user_path=None, project_path=None):
+    """Load and merge YAML configuration files.
+
+    Discovers user-level and project-level config files, validates both,
+    and produces a merged config where project values override user values.
+
+    Args:
+        user_path (str|None): Override user config path. Default: ~/.bedrock_skills/config.yaml
+        project_path (str|None): Override project config path. Default: ./.bedrock_skills.yaml
+
+    Returns:
+        dict: Merged and validated configuration. Empty dict if no config files found.
+    """
+    global _LOADED_CONFIG
+
+    if user_path is None:
+        user_path = os.path.expanduser("~/.bedrock_skills/config.yaml")
+    if project_path is None:
+        project_path = os.path.join(os.getcwd(), ".bedrock_skills.yaml")
+
+    user_dict = {}
+    project_dict = {}
+
+    # Read user config
+    raw_user = _read_yaml_file(user_path)
+    if raw_user is not None and raw_user:
+        validated, warnings = _validate_config(raw_user, user_path)
+        for w in warnings:
+            print(w, file=sys.stderr)
+        user_dict = validated
+
+    # Read project config
+    raw_project = _read_yaml_file(project_path)
+    if raw_project is not None and raw_project:
+        validated, warnings = _validate_config(raw_project, project_path)
+        for w in warnings:
+            print(w, file=sys.stderr)
+        project_dict = validated
+
+    # Deep merge: project wins over user
+    merged = _deep_merge(user_dict, project_dict)
+
+    _LOADED_CONFIG = merged
+    return merged
+
+
+def get_config(section=None, key=None):
+    """Access the loaded configuration.
+
+    Args:
+        section (str|None): Config section name. None returns full config.
+        key (str|None): Key within section. None returns full section dict.
+
+    Returns:
+        dict | Any | None: Full config, section dict, specific value, or None if not found.
+    """
+    _ensure_config_loaded()
+
+    if section is None:
+        return _LOADED_CONFIG or {}
+
+    section_data = (_LOADED_CONFIG or {}).get(section)
+    if section_data is None:
+        return None if key else {}
+
+    if key is None:
+        return section_data
+
+    return section_data.get(key)
+
+
+def resolve_setting(section, key, explicit_value=None, env_var=None):
+    """Resolve a setting through the full precedence chain.
+
+    Precedence: explicit_value > environment variable > config file > schema default
+
+    Args:
+        section (str): Config section name (e.g., "agent_defaults").
+        key (str): Setting key within section (e.g., "input_tokens").
+        explicit_value: Function parameter value. None means "not provided".
+        env_var (str|None): Environment variable name to check. If None, auto-generates
+            from section+key as BEDROCK_{SECTION}_{KEY} (uppercase).
+
+    Returns:
+        The resolved value with correct type.
+    """
+    # 1. Explicit value wins (anything that is not None)
+    if explicit_value is not None:
+        return explicit_value
+
+    # Get field spec for type info and default
+    field_spec = CONFIG_SCHEMA.get(section, {}).get(key)
+    if field_spec is None:
+        return None  # Unknown section/key
+
+    expected_type = field_spec["type"]
+    default_value = field_spec["default"]
+
+    # 2. Check environment variable
+    if env_var is None:
+        env_var = f"BEDROCK_{section.upper()}_{key.upper()}"
+
+    env_value = os.environ.get(env_var, "")
+    if env_value:
+        try:
+            if expected_type == bool:
+                converted = env_value.lower() in ("true", "1", "yes")
+            elif expected_type == int:
+                converted = int(env_value)
+            elif expected_type == float:
+                converted = float(env_value)
+            else:
+                converted = env_value
+            return converted
+        except (ValueError, TypeError):
+            print(f"⚠️  Config: Environment variable '{env_var}' = '{env_value}' cannot be converted "
+                  f"to {expected_type.__name__}. Ignoring.", file=sys.stderr)
+
+    # 3. Check config file
+    _ensure_config_loaded()
+    config_value = (_LOADED_CONFIG or {}).get(section, {}).get(key)
+    if config_value is not None:
+        return config_value
+
+    # 4. Schema default
+    return default_value
+
+
+def generate_config_template(output_path=None, force=False):
+    """Generate a commented YAML config template from CONFIG_SCHEMA.
+
+    Writes a fully documented template with all settings commented out,
+    showing types, descriptions, valid options, and default values.
+
+    Args:
+        output_path (str|None): Where to write. Default: ~/.bedrock_skills/config.yaml
+        force (bool): Overwrite existing file without prompting.
+
+    Returns:
+        str: The generated YAML content.
+    """
+    if output_path is None:
+        output_path = os.path.expanduser("~/.bedrock_skills/config.yaml")
+
+    # Build template content
+    lines = []
+    lines.append("# Bedrock Skills Configuration")
+    lines.append("# Generated by: python3 bedrock_pricing.py --init-config")
+    lines.append("#")
+    lines.append("# Precedence: function parameter > env var > project config > user config > hardcoded default")
+    lines.append("# Config values are defaults only. If the user specifies a value in their prompt,")
+    lines.append("# always use the user's value. Config defaults apply only to parameters not mentioned.")
+    lines.append("#")
+    lines.append(f"# User-level:    ~/.bedrock_skills/config.yaml")
+    lines.append(f"# Project-level: ./.bedrock_skills.yaml")
+    lines.append("")
+
+    section_names = []
+    for section_name, section_spec in CONFIG_SCHEMA.items():
+        section_names.append(section_name)
+        description = section_spec.get("_description", section_name)
+        lines.append(f"# {'─' * 70}")
+        lines.append(f"# {description}")
+        lines.append(f"# {'─' * 70}")
+        lines.append(f"{section_name}:")
+
+        for key, field_spec in section_spec.items():
+            if key.startswith("_"):
+                continue
+
+            field_type = field_spec["type"].__name__
+            field_desc = field_spec.get("description", key)
+            field_default = field_spec["default"]
+
+            # Build type annotation with constraints
+            type_info = f"{field_type}"
+            if "min" in field_spec and "max" in field_spec:
+                type_info += f", {field_spec['min']}-{field_spec['max']}"
+            elif "min" in field_spec:
+                type_info += f", min {field_spec['min']}"
+            if "choices" in field_spec:
+                type_info += f", options: {field_spec['choices']}"
+
+            lines.append(f"  # {key} ({type_info}): {field_desc}")
+            if field_default is None:
+                lines.append(f"  # {key}: null")
+            elif isinstance(field_default, bool):
+                lines.append(f"  # {key}: {'true' if field_default else 'false'}")
+            else:
+                lines.append(f"  # {key}: {field_default}")
+            lines.append("")
+
+        lines.append("")
+
+    content = "\n".join(lines)
+
+    # Handle file writing
+    target_dir = os.path.dirname(output_path)
+    if target_dir and not os.path.exists(target_dir):
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError as e:
+            print(f"❌ Cannot create directory '{target_dir}': {e}", file=sys.stderr)
+            return content
+
+    # Check if file exists
+    if os.path.exists(output_path) and not force:
+        if sys.stdin.isatty():
+            response = input(f"Config file already exists at '{output_path}'. Overwrite? [y/N] ")
+            if response.lower() not in ("y", "yes"):
+                print("Aborted. No changes made.", file=sys.stderr)
+                return content
+        else:
+            print(f"❌ Config file already exists at '{output_path}'. Use --force to overwrite.",
+                  file=sys.stderr)
+            return content
+
+    try:
+        with open(output_path, "w") as f:
+            f.write(content)
+        print(f"✅ Config template written to: {os.path.abspath(output_path)}")
+        print(f"   Sections: {', '.join(section_names)}")
+    except OSError as e:
+        print(f"❌ Cannot write config file '{output_path}': {e}", file=sys.stderr)
+
+    return content
+
+
 def classify_provider(name: str) -> str:
     for keywords, provider in PROVIDER_RULES:
         for kw in keywords:
@@ -176,7 +716,7 @@ def check_pricing_data_status(cache_dir=None):
             - refresh_command: str — command to run to fix issues
     """
     if cache_dir is None:
-        cache_dir = os.path.expanduser("~/bedrock_cache")
+        cache_dir = os.path.expanduser(resolve_setting("pricing_cache", "dir"))
 
     all_files = {
         "pricing": list(CACHE_FILES.values()),
@@ -188,12 +728,14 @@ def check_pricing_data_status(cache_dir=None):
     missing = []
     stale = []
 
+    max_age_days = resolve_setting("pricing_cache", "max_age_days")
+
     for filename in flat_files:
         filepath = os.path.join(cache_dir, filename)
         if os.path.exists(filepath):
             age_days = (time.time() - os.path.getmtime(filepath)) / 86400
             found.append({"file": filename, "path": filepath, "age_days": round(age_days, 1)})
-            if age_days > 7:
+            if age_days > max_age_days:
                 stale.append({"file": filename, "path": filepath, "age_days": int(age_days)})
         else:
             missing.append(filename)
@@ -988,17 +1530,17 @@ def calculate_compounded_tokens_for_agent(
 
 
 def calculate_rag_subagent_tokens(
-    system_prompt_tokens=500,
-    n_tools=2,
-    tool_spec_tokens=100,
-    input_query_tokens=100,
-    tool_call_tokens=50,
-    rag_n_retrieval_calls=2,
-    rag_n_chunks=10,
-    rag_chunk_size=300,
-    n_other_tool_calls=1,
-    other_tool_result_tokens=200,
-    output_tokens=300,
+    system_prompt_tokens=None,
+    n_tools=None,
+    tool_spec_tokens=None,
+    input_query_tokens=None,
+    tool_call_tokens=None,
+    rag_n_retrieval_calls=None,
+    rag_n_chunks=None,
+    rag_chunk_size=None,
+    n_other_tool_calls=None,
+    other_tool_result_tokens=None,
+    output_tokens=None,
     detail_level="summary",  # "summary" or "full"
 ):
     """Calculate token usage for a single RAG sub-agent invocation.
@@ -1044,6 +1586,19 @@ def calculate_rag_subagent_tokens(
         dict: cycles (list of per-model-call details), total_input, total_output,
             output_tokens_to_main_agent, assumptions, explanation.
     """
+    # Resolve defaults from config (explicit values passed by caller always win)
+    system_prompt_tokens = resolve_setting("rag_defaults", "system_prompt_tokens", system_prompt_tokens)
+    n_tools = resolve_setting("rag_defaults", "n_tools", n_tools)
+    tool_spec_tokens = resolve_setting("rag_defaults", "tool_spec_tokens", tool_spec_tokens)
+    input_query_tokens = resolve_setting("rag_defaults", "input_query_tokens", input_query_tokens)
+    tool_call_tokens = resolve_setting("rag_defaults", "tool_call_tokens", tool_call_tokens)
+    rag_n_retrieval_calls = resolve_setting("rag_defaults", "rag_n_retrieval_calls", rag_n_retrieval_calls)
+    rag_n_chunks = resolve_setting("rag_defaults", "rag_n_chunks", rag_n_chunks)
+    rag_chunk_size = resolve_setting("rag_defaults", "rag_chunk_size", rag_chunk_size)
+    n_other_tool_calls = resolve_setting("rag_defaults", "n_other_tool_calls", n_other_tool_calls)
+    other_tool_result_tokens = resolve_setting("rag_defaults", "other_tool_result_tokens", other_tool_result_tokens)
+    output_tokens = resolve_setting("rag_defaults", "output_tokens", output_tokens)
+
     # Input validation
     if rag_n_retrieval_calls < 0:
         raise ValueError(f"rag_n_retrieval_calls must be >= 0, got {rag_n_retrieval_calls}")
@@ -1170,16 +1725,16 @@ def calculate_rag_subagent_tokens(
 
 
 def calculate_research_subagent_tokens(
-    system_prompt_tokens=500,
-    n_tools=2,
-    tool_spec_tokens=50,
-    input_query_tokens=100,
-    tool_call_tokens=50,
-    n_research_iterations=4,
-    fetch_probability=0.5,
-    search_result_tokens=100,
-    fetch_result_tokens=2000,
-    output_tokens=1000,
+    system_prompt_tokens=None,
+    n_tools=None,
+    tool_spec_tokens=None,
+    input_query_tokens=None,
+    tool_call_tokens=None,
+    n_research_iterations=None,
+    fetch_probability=None,
+    search_result_tokens=None,
+    fetch_result_tokens=None,
+    output_tokens=None,
     detail_level="summary",  # "summary" or "full"
 ):
     """Calculate token usage for a single internet research sub-agent invocation.
@@ -1222,6 +1777,18 @@ def calculate_research_subagent_tokens(
         dict: cycles (list of per-model-call details), total_input, total_output,
             output_tokens_to_main_agent, assumptions, explanation.
     """
+    # Resolve defaults from config (explicit values passed by caller always win)
+    system_prompt_tokens = resolve_setting("research_defaults", "system_prompt_tokens", system_prompt_tokens)
+    n_tools = resolve_setting("research_defaults", "n_tools", n_tools)
+    tool_spec_tokens = resolve_setting("research_defaults", "tool_spec_tokens", tool_spec_tokens)
+    input_query_tokens = resolve_setting("research_defaults", "input_query_tokens", input_query_tokens)
+    tool_call_tokens = resolve_setting("research_defaults", "tool_call_tokens", tool_call_tokens)
+    n_research_iterations = resolve_setting("research_defaults", "n_research_iterations", n_research_iterations)
+    fetch_probability = resolve_setting("research_defaults", "fetch_probability", fetch_probability)
+    search_result_tokens = resolve_setting("research_defaults", "search_result_tokens", search_result_tokens)
+    fetch_result_tokens = resolve_setting("research_defaults", "fetch_result_tokens", fetch_result_tokens)
+    output_tokens = resolve_setting("research_defaults", "output_tokens", output_tokens)
+
     # Input validation
     if n_research_iterations < 0:
         raise ValueError(f"n_research_iterations must be >= 0, got {n_research_iterations}")
@@ -1450,16 +2017,16 @@ def calculate_main_agent_compounded_cost(
     cache_write_price,      # None = model doesn't support caching
     agent_sessions_per_month,
     # Token parameters (passed to calculate_compounded_tokens_for_agent)
-    questions_per_agent_session=5,
-    input_tokens=100,
-    output_tokens=150,
-    system_prompt_tokens=2000,
-    tools_passed_to_agent=10,
-    tool_spec_tokens=100,
-    tools_invoked=5,
-    tool_call_tokens=100,
-    tool_result_tokens=100,
-    history_mode="full",
+    questions_per_agent_session=None,
+    input_tokens=None,
+    output_tokens=None,
+    system_prompt_tokens=None,
+    tools_passed_to_agent=None,
+    tool_spec_tokens=None,
+    tools_invoked=None,
+    tool_call_tokens=None,
+    tool_result_tokens=None,
+    history_mode=None,
     # Volume & TTL parameters
     days_per_month=30,
     usage_hours_per_day=12,
@@ -1515,6 +2082,18 @@ def calculate_main_agent_compounded_cost(
             savings, ttl_recommendation, checkpoint_analysis, monthly costs,
             explanation.
     """
+    # Resolve defaults from config (explicit values passed by caller always win)
+    questions_per_agent_session = resolve_setting("agent_defaults", "questions_per_session", questions_per_agent_session)
+    input_tokens = resolve_setting("agent_defaults", "input_tokens", input_tokens)
+    output_tokens = resolve_setting("agent_defaults", "output_tokens", output_tokens)
+    system_prompt_tokens = resolve_setting("agent_defaults", "system_prompt_tokens", system_prompt_tokens)
+    tools_passed_to_agent = resolve_setting("agent_defaults", "tools_passed", tools_passed_to_agent)
+    tool_spec_tokens = resolve_setting("agent_defaults", "tool_spec_tokens", tool_spec_tokens)
+    tools_invoked = resolve_setting("agent_defaults", "tools_invoked", tools_invoked)
+    tool_call_tokens = resolve_setting("agent_defaults", "tool_call_tokens", tool_call_tokens)
+    tool_result_tokens = resolve_setting("agent_defaults", "tool_result_tokens", tool_result_tokens)
+    history_mode = resolve_setting("defaults", "history_mode", history_mode)
+
     # Validate cache_history_checkpoints
     # Max 3 because: Bedrock allows 4 checkpoints total per request.
     # Checkpoint 1 is always reserved for system_prompt + tool_specs.
@@ -1998,8 +2577,14 @@ def calculate_agent_session_compounded_cost(
     if subagents is None:
         subagents = []
 
-    questions_per_session = main_agent_config.get("questions_per_agent_session", 5)
-    tools_invoked = main_agent_config.get("tools_invoked", 5)
+    questions_per_session = main_agent_config.get(
+        "questions_per_agent_session",
+        resolve_setting("agent_defaults", "questions_per_session")
+    )
+    tools_invoked = main_agent_config.get(
+        "tools_invoked",
+        resolve_setting("agent_defaults", "tools_invoked")
+    )
 
     # Validate sub-agent configs
     for i, sa in enumerate(subagents):
@@ -3192,6 +3777,8 @@ def query_quotas(cache_dir, region_filter=None, model_filter=None, quota_type_fi
 def main():
     parser = argparse.ArgumentParser(description="Fetch Bedrock & AgentCore pricing")
     parser.add_argument("--refresh", action="store_true", help="Refresh cache from AWS Pricing API")
+    parser.add_argument("--init-config", action="store_true", help="Generate commented config template at ~/.bedrock_skills/config.yaml")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing config file without prompting (use with --init-config)")
     parser.add_argument("--cache-dir", type=str, default=os.path.expanduser("~/bedrock_cache"), help="Dir to read cache files")
     parser.add_argument("--quota-regions", type=str,
                         default="us-east-1,us-west-2,eu-west-1,eu-central-1,ap-northeast-1,ap-southeast-1,ap-southeast-2,ap-south-1,ca-central-1,sa-east-1",
@@ -3205,6 +3792,9 @@ def main():
     parser.add_argument("--skip-quotas", action="store_true", default=False, help="Skip quota refresh (pricing only)")
     args = parser.parse_args()
     cache_dir = os.path.expanduser("~/bedrock_cache")
+    if args.init_config:
+        generate_config_template(force=args.force)
+        return
     if args.refresh:
         refresh_cache(cache_dir)
         if not args.skip_quotas:
@@ -3646,12 +4236,12 @@ def check_capacity_fit(
     capacity_profile,
     # Traffic profile
     questions_per_month,
-    peak_to_avg_ratio=3.0,             # peak RPM = avg RPM × this factor
-    active_hours_per_day=12,           # hours with traffic (rest = 0)
-    active_days_per_month=22,          # business days
+    peak_to_avg_ratio=None,            # peak RPM = avg RPM × this factor
+    active_hours_per_day=None,         # hours with traffic (rest = 0)
+    active_days_per_month=None,        # business days
     # Model characteristics
     output_burndown_rate=1,            # 5 for Claude 3.7+, 1 for all others
-    max_tokens_setting=4096,           # what max_tokens is set to in the API call
+    max_tokens_setting=None,           # what max_tokens is set to in the API call
     # Quota limits — must provide actual limits from query_quotas()
     tier_limits=None,                  # Required: {"rpm_high": N, "tpm_high": N, "tpd_high": N (optional)} from quota cache
 ):
@@ -3684,6 +4274,12 @@ def check_capacity_fit(
         recommendations (list[str]), optimization_checklist (list[dict]),
         explanation (dict).
     """
+    # Resolve defaults from config (explicit values passed by caller always win)
+    peak_to_avg_ratio = resolve_setting("capacity", "peak_to_avg_ratio", peak_to_avg_ratio)
+    active_hours_per_day = resolve_setting("capacity", "active_hours_per_day", active_hours_per_day)
+    active_days_per_month = resolve_setting("capacity", "active_days_per_month", active_days_per_month)
+    max_tokens_setting = resolve_setting("capacity", "max_tokens_setting", max_tokens_setting)
+
     # Input validation
     if questions_per_month <= 0:
         raise ValueError(f"questions_per_month must be > 0, got {questions_per_month}")
@@ -3903,17 +4499,17 @@ def calculate_agentcore_cost(
     questions_per_month=1_000_000,
     questions_per_session=5,
     tools_invoked=5,
-    tools_indexed=50,
+    tools_indexed=None,
     # Runtime params
-    num_vcpus=2,
-    peak_memory_gb=4,
-    io_wait_pct=0.70,
-    idle_time_between_questions_s=30,
+    num_vcpus=None,
+    peak_memory_gb=None,
+    io_wait_pct=None,
+    idle_time_between_questions_s=None,
     time_per_llm_turn_s=4.0,
     # Memory params
-    stm_events_per_question=2,
-    ltm_records_per_session=3,
-    ltm_retrievals_per_question=1,
+    stm_events_per_question=None,
+    ltm_records_per_session=None,
+    ltm_retrievals_per_question=None,
     # BrowserTool params
     browser_usage_pct=1.0,
     browser_vcpus=2,
@@ -3947,6 +4543,16 @@ def calculate_agentcore_cost(
         explanation (dict): session_profile, runtime, gateway, memory,
             grand_total, cost_composition.
     """
+    # Resolve defaults from config (explicit values passed by caller always win)
+    num_vcpus = resolve_setting("agentcore_defaults", "num_vcpus", num_vcpus)
+    peak_memory_gb = resolve_setting("agentcore_defaults", "peak_memory_gb", peak_memory_gb)
+    io_wait_pct = resolve_setting("agentcore_defaults", "io_wait_pct", io_wait_pct)
+    idle_time_between_questions_s = resolve_setting("agentcore_defaults", "idle_time_between_questions_s", idle_time_between_questions_s)
+    stm_events_per_question = resolve_setting("agentcore_defaults", "stm_events_per_question", stm_events_per_question)
+    ltm_records_per_session = resolve_setting("agentcore_defaults", "ltm_records_per_session", ltm_records_per_session)
+    ltm_retrievals_per_question = resolve_setting("agentcore_defaults", "ltm_retrievals_per_question", ltm_retrievals_per_question)
+    tools_indexed = resolve_setting("agentcore_defaults", "tools_indexed", tools_indexed)
+
     # Input validation
     if questions_per_month <= 0:
         raise ValueError(f"questions_per_month must be > 0, got {questions_per_month}")
@@ -4109,18 +4715,18 @@ def calculate_business_value(
     sessions_per_month,
     agent_cost_monthly=0,
     # Dim 1: Time savings
-    time_without_ai_min=20,
-    time_with_ai_min=10,
-    human_cost_per_hour=75,
-    revenue_per_hour=300,
+    time_without_ai_min=None,
+    time_with_ai_min=None,
+    human_cost_per_hour=None,
+    revenue_per_hour=None,
     # Dim 2: Churn reduction (set total_customers=0 to skip)
     total_customers=0,
-    churn_without_ai_pct=2.0,
-    churn_with_ai_pct=1.0,
+    churn_without_ai_pct=None,
+    churn_with_ai_pct=None,
     revenue_per_customer_year=1000,
     # Dim 3: Sales increase (set annual_sales_revenue=0 to skip)
     annual_sales_revenue=0,
-    sales_increase_pct=10.0,
+    sales_increase_pct=None,
     # Optional: override default business value tiers
     value_tiers=None,
 ):
@@ -4151,6 +4757,15 @@ def calculate_business_value(
         explanation (dict): dim1_time_savings, dim2_churn_reduction (conditional),
             dim3_sales_increase (conditional), summary.
     """
+    # Resolve defaults from config (explicit values passed by caller always win)
+    time_without_ai_min = resolve_setting("business_value_defaults", "time_without_ai_min", time_without_ai_min)
+    time_with_ai_min = resolve_setting("business_value_defaults", "time_with_ai_min", time_with_ai_min)
+    human_cost_per_hour = resolve_setting("business_value_defaults", "human_cost_per_hour", human_cost_per_hour)
+    revenue_per_hour = resolve_setting("business_value_defaults", "revenue_per_hour", revenue_per_hour)
+    churn_without_ai_pct = resolve_setting("business_value_defaults", "churn_without_ai_pct", churn_without_ai_pct)
+    churn_with_ai_pct = resolve_setting("business_value_defaults", "churn_with_ai_pct", churn_with_ai_pct)
+    sales_increase_pct = resolve_setting("business_value_defaults", "sales_increase_pct", sales_increase_pct)
+
     time_saved_min = time_without_ai_min - time_with_ai_min
 
     # --- Dimension 1: Time Savings (all 3 tiers) ---

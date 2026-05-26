@@ -155,22 +155,35 @@ When user describes parent + sub-agents, calculate model inference for **each ag
 
 Present each agent's cost individually, then sum for the architecture total.
 
-## Defaults
+## Configuration
 
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| Questions/session | 5 | Ask user if not specified |
-| Tools invoked/question | 5 | Ask user if not specified |
-| Tools indexed | 50 | Flat monthly fee |
-| vCPUs | 2 | Default microVM |
-| Peak memory | 4 GB | Default microVM |
-| I/O wait % | 70% | vCPU is FREE during I/O wait |
-| Idle time between Qs | 30 sec | User think time |
-| STM events/question | 2 | Question + response |
-| LTM records/session | 3 | Built-in extraction |
-| LTM retrievals/question | 1 | Context lookup |
-| Eval sampling rate | 10% | Main cost lever |
-| Eval built-in evaluators | 3 | Helpfulness, Correctness, Safety |
+AgentCore defaults are managed by the YAML configuration system in `bedrock_pricing.py`.
+Override any default via `~/.bedrock_skills/config.yaml` (user-level) or `./.bedrock_skills.yaml` (project-level).
+
+Run `python3 bedrock_pricing.py --init-config` to generate a commented template showing all
+available settings with their current defaults.
+
+**Precedence:** function parameter > environment variable > project config > user config > hardcoded default
+
+**Config values are defaults only.** If the user specifies a value in their prompt, always use
+the user's value. Config defaults apply only to parameters the user has not mentioned.
+
+See the `agentcore_defaults` section in the config template for overridable settings.
+
+| Parameter | Notes |
+|-----------|-------|
+| Questions/session | Ask user if not specified |
+| Tools invoked/question | Ask user if not specified |
+| Tools indexed | Flat monthly fee |
+| vCPUs | Default microVM |
+| Peak memory | Default microVM |
+| I/O wait % | vCPU is FREE during I/O wait |
+| Idle time between Qs | User think time |
+| STM events/question | Question + response |
+| LTM records/session | Built-in extraction |
+| LTM retrievals/question | Context lookup |
+| Eval sampling rate | Main cost lever |
+| Eval built-in evaluators | Helpfulness, Correctness, Safety |
 
 ## Cache Key Reference
 

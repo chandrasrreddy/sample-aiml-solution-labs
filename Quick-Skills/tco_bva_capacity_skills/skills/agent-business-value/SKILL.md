@@ -126,34 +126,35 @@ Structure the output as:
 - Different customer
 - Switch between 1a and 1b
 
-## Defaults & Sources
+## Configuration
 
-### Dimension 1: Time Savings
+Business value defaults are managed by the YAML configuration system in `bedrock_pricing.py`.
+Override any default via `~/.bedrock_skills/config.yaml` (user-level) or `./.bedrock_skills.yaml` (project-level).
 
-| Parameter | Default | Source |
-|-----------|---------|--------|
-| Time without AI | 20 min | BCG: 30–50% acceleration |
-| Time with AI | 10 min | 50% reduction |
-| Agent effectiveness | 65% (moderate) | Harvard/BCG: 40% quality lift |
-| Efficiency factor | 60% (moderate) | Gartner: reclaimed time utilization |
-| Human cost/hr | $75 | McKinsey/BCG fully-loaded range |
-| Revenue/hr | $300 | ~$600K rev/employee fallback |
+Run `python3 bedrock_pricing.py --init-config` to generate a commented template showing all
+available settings with their current defaults.
 
-### Dimension 2: Churn Reduction
+**Precedence:** function parameter > environment variable > project config > user config > hardcoded default
 
-| Parameter | Default | Source |
-|-----------|---------|--------|
-| Churn without AI | 2% monthly | SaaS/enterprise typical |
-| Churn with AI | 1% monthly | AI churn prediction 82% accuracy |
-| Total customers | 100,000 | Ask user / web lookup |
-| Revenue/customer/yr | $1,000 | Ask user / web lookup |
+**Config values are defaults only.** If the user specifies a value in their prompt, always use
+the user's value. Config defaults apply only to parameters the user has not mentioned.
 
-### Dimension 3: Sales Increase
+See the `business_value_defaults` section in the config template for overridable settings:
+`time_without_ai_min`, `time_with_ai_min`, `human_cost_per_hour`, `revenue_per_hour`,
+`agent_effectiveness_pct`, `efficiency_factor_pct`, `churn_without_ai_pct`, `churn_with_ai_pct`,
+`sales_increase_pct`.
 
-| Parameter | Default | Source |
-|-----------|---------|--------|
-| Sales increase % | 10% | BCG: 15–20% in general trade |
-| Annual sales revenue | $100M | Ask user / web lookup |
+### Research Sources
+
+| Parameter | Source |
+|-----------|--------|
+| Time savings (30–50% acceleration) | BCG |
+| Agent effectiveness (40% quality lift) | Harvard/BCG |
+| Efficiency factor (reclaimed time utilization) | Gartner |
+| Human cost/hr ($75 fully-loaded) | McKinsey/BCG |
+| Revenue/hr (~$600K rev/employee fallback) | Industry benchmarks |
+| Churn prediction (82% accuracy) | AI churn prediction research |
+| Sales increase (15–20% in general trade) | BCG |
 
 ## Explanation Rendering
 

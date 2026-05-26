@@ -341,62 +341,74 @@ full_report = _format_full_output(
   3. Present **combined total** (model + infrastructure) — never model-only for agentic workloads
   4. Load `bedrock-capacity` skill and present the capacity fit check using the `capacity_profile` from the cost result — do NOT recompute tokens
 
-## Parameter Defaults
+## Configuration
 
-> These are the default values used when the user does not specify a value. **If the user provides a value for any parameter, always use the user's value instead.**
+Parameter defaults are managed by the YAML configuration system in `bedrock_pricing.py`.
+Override any default via `~/.bedrock_skills/config.yaml` (user-level) or `./.bedrock_skills.yaml` (project-level).
+
+Run `python3 bedrock_pricing.py --init-config` to generate a commented template showing all
+available settings with their current defaults.
+
+**Precedence:** function parameter > environment variable > project config > user config > hardcoded default
+
+**Config values are defaults only.** If the user specifies a value in their prompt, always use
+the user's value. Config defaults apply only to parameters the user has not mentioned.
+
+See the config template for the full list of overridable settings in the `agent_defaults`,
+`rag_defaults`, `research_defaults`, `capacity`, `pricing_cache`, and `model_preferences` sections.
 
 ### Main Agent (`main_agent_config`)
 
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| Region | (ask user) | No default — always confirm |
-| `model_name` | (optional) | Model name string for capacity planning (e.g., "Claude Sonnet 4.6") |
-| Service tier | (discover via `all_tiers=True`) | Use lowest-cost tier with prompt caching support |
-| Inference variant | (discover via `all_tiers=True`) | Prefer Global if available |
-| `questions_per_agent_session` | 5 | Questions per session |
-| `input_tokens` | 100 | User's question text |
-| `output_tokens` | 150 | Agent's final answer |
-| `system_prompt_tokens` | 2000 | Sent with every LLM call |
-| `tools_passed_to_agent` | 10 | Number of tools in schema |
-| `tool_spec_tokens` | 100 | Tokens per tool specification |
-| `tools_invoked` | 5 | Tool calls per question |
-| `tool_call_tokens` | 100 | Model output per tool call |
-| `tool_result_tokens` | 100 | Tokens per tool result |
-| `history_mode` | "full" | "full" or "condensed" |
-| `days_per_month` | 30 | For TTL calculation |
-| `usage_hours_per_day` | 12 | Active hours per day |
-| `cache_history_checkpoints` | 3 | 0-3 (max 3, Bedrock limit) |
+| Parameter | Notes |
+|-----------|-------|
+| Region | No default — always confirm with user |
+| `model_name` | Model name string for capacity planning (e.g., "Claude Sonnet 4.6") |
+| Service tier | Discover via `all_tiers=True` — use lowest-cost with prompt caching |
+| Inference variant | Discover via `all_tiers=True` — prefer Global if available |
+| `questions_per_agent_session` | Questions per session |
+| `input_tokens` | User's question text |
+| `output_tokens` | Agent's final answer |
+| `system_prompt_tokens` | Sent with every LLM call |
+| `tools_passed_to_agent` | Number of tools in schema |
+| `tool_spec_tokens` | Tokens per tool specification |
+| `tools_invoked` | Tool calls per question |
+| `tool_call_tokens` | Model output per tool call |
+| `tool_result_tokens` | Tokens per tool result |
+| `history_mode` | "full" or "condensed" |
+| `days_per_month` | For TTL calculation |
+| `usage_hours_per_day` | Active hours per day |
+| `cache_history_checkpoints` | 0-3 (max 3, Bedrock limit) |
 
 ### RAG Sub-Agent (`token_params` for type="rag")
 
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `system_prompt_tokens` | 500 | Sub-agent system prompt |
-| `n_tools` | 2 | Tools available to sub-agent |
-| `tool_spec_tokens` | 100 | Tokens per tool spec |
-| `input_query_tokens` | 100 | Query from main agent |
-| `tool_call_tokens` | 50 | Model output per tool call |
-| `rag_n_retrieval_calls` | 2 | KB retrieval calls |
-| `rag_n_chunks` | 10 | Chunks per retrieval |
-| `rag_chunk_size` | 300 | Tokens per chunk |
-| `n_other_tool_calls` | 1 | Other tools (reranker, etc.) |
-| `other_tool_result_tokens` | 200 | Result size for other tools |
-| `output_tokens` | 300 | Response back to main agent |
+| Parameter | Notes |
+|-----------|-------|
+| `system_prompt_tokens` | Sub-agent system prompt |
+| `n_tools` | Tools available to sub-agent |
+| `tool_spec_tokens` | Tokens per tool spec |
+| `input_query_tokens` | Query from main agent |
+| `tool_call_tokens` | Model output per tool call |
+| `rag_n_retrieval_calls` | KB retrieval calls |
+| `rag_n_chunks` | Chunks per retrieval |
+| `rag_chunk_size` | Tokens per chunk |
+| `n_other_tool_calls` | Other tools (reranker, etc.) |
+| `other_tool_result_tokens` | Result size for other tools |
+| `output_tokens` | Response back to main agent |
 
 ### Research Sub-Agent (`token_params` for type="research")
 
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `system_prompt_tokens` | 500 | Sub-agent system prompt |
-| `n_tools` | 2 | Tools available (search, fetch) |
-| `tool_spec_tokens` | 50 | Tokens per tool spec |
-| `input_query_tokens` | 100 | Query from main agent |
-| `tool_call_tokens` | 50 | Model output per tool call |
-| `n_research_iterations` | 4 | Search→(optional fetch) cycles |
-| `fetch_probability` | 0.5 | Chance each search leads to fetch |
-| `search_result_tokens` | 100 | Tokens from web_search |
-| `fetch_result_tokens` | 2000 | Tokens from web_fetch |
-| `output_tokens` | 1000 | Response back to main agent |
+| Parameter | Notes |
+|-----------|-------|
+| `system_prompt_tokens` | Sub-agent system prompt |
+| `n_tools` | Tools available (search, fetch) |
+| `tool_spec_tokens` | Tokens per tool spec |
+| `input_query_tokens` | Query from main agent |
+| `tool_call_tokens` | Model output per tool call |
+| `n_research_iterations` | Search→(optional fetch) cycles |
+| `fetch_probability` | Chance each search leads to fetch |
+| `search_result_tokens` | Tokens from web_search |
+| `fetch_result_tokens` | Tokens from web_fetch |
+| `output_tokens` | Response back to main agent |
 
 ## Output Structure
 
