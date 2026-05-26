@@ -29,7 +29,7 @@ If the user asks about token usage/consumption (not pricing), no pricing cache f
 - `calculate_rag_subagent_tokens()` — RAG sub-agent tokens per invocation
 - `calculate_research_subagent_tokens()` — research sub-agent tokens per invocation
 
-Skip all other workflow steps. Use `detail_level="full"` for per-cycle breakdown.
+Skip all other workflow steps. These functions accept `detail_level="full"` for per-cycle breakdown.
 
 ## Prerequisites
 
@@ -242,96 +242,92 @@ result = calculate_agent_session_compounded_cost(
 )
 ```
 
+**Example — Explicit output path:**
+
+```python
+# Write report to a specific file instead of the default directory
+result = calculate_agent_session_compounded_cost(
+    main_agent_config={...},
+    output_path="/path/to/my-report.md",
+)
+```
+
 **Key rules:**
 - Only override parameters the user specifies — omitted keys use defaults
 - `tools_invoked` must be >= number of sub-agents with `questions_invoked > 0`
 - `questions_invoked=0` means pre-session (output added to system_prompt, cached)
 - `questions_invoked=N` means invoked as a tool in the first N questions
 - Sub-agent `token_params` only need the keys the user wants to override
+- `output_path` is optional — if omitted, the report is written to the configured default directory
 
 ### 7. Present Results
 
 > **CRITICAL:** Always present the values returned by the function. Never compute your own token counts, costs, or explanations. The function handles all math internally. Your role is to format and present the function's output — not to replicate or override it.
 
-#### Summary mode (default)
+#### Normal flow (file written successfully)
 
-The function returns `detail_level="summary"` by default:
+The function writes a full detailed report to a markdown file and returns a compact summary:
 
 ```python
-# Example output structure (values are illustrative):
+# Example return value (values are illustrative):
 {
-    "session_total": 0.324748,         # per session (with prompt caching)
-    "session_total_no_cache": 0.831350, # per session (no prompt caching)
+    "file_path": "/Users/x/bedrock_reports/claude-sonnet-4.6_10k-sessions_20260526-143022-a1b2.md",
+    "sessions_per_month": 10000,
     "monthly_total": 3247.48,
     "annual_total": 38969.70,
-    "sessions_per_month": 10000,
+    "session_total": 0.324748,
+    "session_total_no_cache": 0.831350,
     "savings_pct": 60.9,
     "main_agent_session_cost": 0.232148,
     "subagent_session_cost": 0.092600,
-    "subagents_summary": [...],
     "recommended_ttl": "5min",
+    "top_cost_driver": "main agent (token compounding)",
+    "capacity_profile": {...},  # pass directly to check_capacity_fit()
 }
 ```
 
-**Present the actual function output as a markdown table.** Do not substitute example values above — use the real values from the result. Include savings % and recommended TTL.
+**Present the compact summary as a markdown table.** Include the `file_path` so the user knows where the full report is. Include savings % and recommended TTL.
 
-#### Full mode (detailed breakdown)
+#### Fallback flow (file write failed)
 
-If the user asks for detailed breakdown, or the request specifies showing detailed calculations, call with `detail_level="full"`:
+If the function cannot write to any path, it returns the full result dict inline with `_file_write_failed: True`. The function also prints a warning to stderr. In this case:
 
-```python
-result = calculate_agent_session_compounded_cost(
-    main_agent_config={...},  # same params as before
-    subagents=[...],          # same params as before
-    detail_level="full",
-)
+1. Present the full result using `token_table` and other fields as described below
+2. Inform the user that the report could not be saved to a file
+3. Suggest the user configure a writable path via `reports.output_dir` in `~/.bedrock_skills/config.yaml`
 
-# The result includes a pre-formatted token breakdown table:
-token_table_markdown = result["token_table"]
+#### Accessing the full report
 
-# And a capacity profile derivation table:
-capacity_profile_table = result["capacity_profile_table"]
-```
+The full report is written to the file at `file_path`. It contains all sections in standard order:
 
-The full result includes:
-- **`token_table`** — pre-formatted markdown with complete per-cycle token breakdown for all agents. Render verbatim.
-- **`capacity_profile_table`** — pre-formatted markdown showing Field | Formula | Value for how capacity profile values were derived. Render verbatim.
-
-To generate the **complete formatted report** with all sections in the standard order, use `_format_full_output()`:
-
-```python
-# After calculating cost and capacity:
-full_report = _format_full_output(
-    result,
-    cache_status=cache_status,       # from check_pricing_data_status()
-    models_found=models_found,       # list of model names from resolution
-    all_tiers=all_tiers,             # from extract_bedrock_model_prices(all_tiers=True)
-    prices=prices,                   # selected prices dict
-    tier_limits=tier_limits,         # from get_tier_limits_for_model()
-    cap_result=cap_result,           # from check_capacity_fit()
-)
-# full_report is a complete markdown string — render it directly
-```
-
-**Standard section order in `full_report`:**
 1. **Cost Summary** — session/monthly/annual costs, savings %, TTL
 2. **Capacity Summary** — fit result table only (RPM/TPM/TPD fits? utilization%)
-3. **Pricing Data Freshness** — cache file ages
+3. **Pricing Data Freshness** — pricing cache file ages
 4. **Model Resolution** — models found, selected
 5. **Pricing** — all tiers table, selected tier
 6. **Inputs & Assumptions** — main agent + sub-agent parameters
-7. **Token Breakdown** — `token_table` verbatim (Main Agent, Sub-Agents, Session Summary)
+7. **Token Breakdown** — complete per-cycle token breakdown for all agents
 8. **Prompt Caching Strategy** — Checkpoint Configuration, Break-Even Analysis, Cost Comparison, TTL Recommendation
 9. **Capacity Detailed Calculations** — Profile Derivation (Field|Formula|Value), Tier Limits, Assumptions, RPM, TPM, TPD
 
+#### Capacity planning from the summary
+
+The compact summary includes `capacity_profile` — pass it directly to `check_capacity_fit()`:
+
+```python
+cap_result = check_capacity_fit(
+    capacity_profile=result["capacity_profile"]["main_agent"],
+    questions_per_month=50000,
+    tier_limits=tier_limits,
+)
+```
+
 **Rules:**
-- **NEVER generate your own token math or cost calculations** — always present the function's output verbatim
-- **NEVER manually construct token breakdown tables** — use `result["token_table"]` exclusively
-- **NEVER show "how I calculated this"** — the function's `token_table`, `capacity_profile_table`, and explanation dicts contain the authoritative derivation
+- **NEVER generate your own token math or cost calculations** — always present the function's output
+- **NEVER manually construct token breakdown tables** — the full report file contains the authoritative breakdown
 - Always use markdown tables — never HTML artifacts or `<details>` tags
 - For multi-agent estimates, show main agent + each sub-agent's contribution
 - Always include savings % and recommended TTL
-- When writing to a file, use `_format_full_output()` to produce the complete report
 
 ### 8. Detect Agentic Workloads
 
@@ -410,12 +406,50 @@ See the config template for the full list of overridable settings in the `agent_
 | `fetch_result_tokens` | Tokens from web_fetch |
 | `output_tokens` | Response back to main agent |
 
+## Report Output
+
+The function always writes a full detailed report to a markdown file and returns a compact summary dict. This keeps token usage low while preserving full detail for the user.
+
+### How it works
+
+1. `calculate_agent_session_compounded_cost()` computes full detail internally
+2. Writes the complete report (token breakdown, capacity, caching strategy) to a `.md` file
+3. Returns a compact summary dict with key metrics + `file_path` + `capacity_profile`
+
+### File location
+
+Reports are written to `~/bedrock_reports/` by default. Configure via:
+- `reports.output_dir` in `~/.bedrock_skills/config.yaml` — change default directory
+- `output_path` parameter — write to a specific file path
+
+Filenames follow the pattern: `{model}_{volume}_{timestamp}-{hex}.md`
+Example: `claude-sonnet-4.6_10k-sessions_20260526-143022-a1b2.md`
+
+### Cleanup
+
+Old reports are automatically cleaned up based on `reports.max_age_days` (default: 30 days) when `reports.auto_cleanup` is True.
+
+Manual cleanup:
+```bash
+python3 bedrock_pricing.py --cleanup-reports
+```
+
+This deletes reports older than the configured threshold. Only files matching the report naming pattern are deleted — not arbitrary `.md` files.
+
+### Failure behavior
+
+If the report cannot be written to any path (configured dir → default dir → all fail):
+- The function returns the full result dict inline with `_file_write_failed: True`
+- A warning is printed to stderr explaining the failure
+- The user should configure a writable path via `reports.output_dir` or pass `output_path`
+
 ## Output Structure
 
-### Summary mode (default, `detail_level="summary"`)
+### Compact summary (normal return)
 
 | Key | Type | Description |
 |-----|------|-------------|
+| `file_path` | str | Path to the full detailed report file |
 | `session_total` | float | Cost per session (with prompt caching) |
 | `session_total_no_cache` | float | Cost per session (no prompt caching) |
 | `monthly_total` | float | Monthly cost |
@@ -424,25 +458,19 @@ See the config template for the full list of overridable settings in the `agent_
 | `savings_pct` | float | Prompt caching savings % |
 | `main_agent_session_cost` | float | Main agent portion |
 | `subagent_session_cost` | float | Sub-agents portion |
-| `subagents_summary` | list | Per sub-agent breakdown |
 | `recommended_ttl` | str | "5min" or "1hour" |
+| `top_cost_driver` | str | Largest cost component |
 | `capacity_profile` | dict | Token profile for capacity planning (pass to `check_capacity_fit()`) |
 
-### Full mode (`detail_level="full"`)
+### Inline fallback (file write failed)
 
-All of the above plus:
+When `_file_write_failed` is True, the full result dict is returned inline. Key additional fields:
 
-**Primary outputs for rendering:**
-- **`token_table`** (str) — **RENDER VERBATIM.** Pre-formatted markdown with complete per-cycle token breakdown for all agents (main + sub-agents). This is the primary token detail output.
-- **`capacity_profile_table`** (str) — **RENDER VERBATIM.** Pre-formatted markdown showing Field | Formula | Value for how capacity profile values were derived from the token data.
-
-**Full report generator (standalone function):**
-- `_format_full_output(result, ...)` — generates the complete markdown report with all sections in standard order. Use this when writing output to a file.
-
-**Additional fields (for programmatic access or supplementary presentation):**
-- `main_agent.token_result.session` — raw per-cycle token data for each question
+- **`token_table`** (str) — pre-formatted markdown with complete per-cycle token breakdown. Render verbatim.
+- **`capacity_profile_table`** (str) — pre-formatted markdown showing Field | Formula | Value.
+- `main_agent.token_result.session` — raw per-cycle token data
 - `main_agent.with_cache.per_question` — per-cycle cost with cache action
-- `main_agent.explanation` — TTL recommendation, prompt caching strategy, checkpoint analysis
+- `main_agent.explanation` — TTL recommendation, prompt caching strategy
 - `subagents[].token_result.cycles` — raw per-cycle token data for each sub-agent
 - `subagents[].cost_detail` — cost breakdown per sub-agent invocation
 

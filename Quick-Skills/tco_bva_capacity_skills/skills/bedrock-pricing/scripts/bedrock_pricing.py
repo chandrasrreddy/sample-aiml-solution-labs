@@ -197,7 +197,6 @@ CONFIG_SCHEMA = {
         "_description": "Behavioral preferences for script execution",
         "skip_confirmation": {"type": bool, "default": False, "description": "Skip interactive confirmation prompts before calculations"},
         "auto_capacity_check": {"type": bool, "default": False, "description": "Automatically run capacity fit check after cost calculations"},
-        "detail_level": {"type": str, "default": "summary", "choices": ["summary", "full"], "description": "Default output detail level"},
     },
     "model_preferences": {
         "_description": "Default model selections by agent role (search hints for query_model_pricing)",
@@ -616,6 +615,270 @@ def generate_config_template(output_path=None, force=False):
         print(f"❌ Cannot write config file '{output_path}': {e}", file=sys.stderr)
 
     return content
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REPORT FILE OUTPUT
+# ═══════════════════════════════════════════════════════════════════════════════
+# Writes detailed markdown reports to disk and returns compact summaries.
+# Default output: ~/bedrock_reports/{model}_{volume}_{timestamp}-{hex}.md
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import re as _re
+import hashlib as _hashlib
+
+
+def _sanitize_filename(name):
+    """Convert string to filesystem-safe slug.
+
+    'Claude Sonnet 4.6' → 'claude-sonnet-4.6'
+    'Nova Lite (v2)' → 'nova-lite-v2'
+    '' → 'unknown-model'
+    """
+    if not name:
+        return "unknown-model"
+    slug = name.lower().strip()
+    slug = _re.sub(r'[^a-z0-9.\-]', '-', slug)
+    slug = _re.sub(r'-+', '-', slug)
+    return slug.strip('-') or "unknown-model"
+
+
+def _format_volume(sessions_per_month):
+    """Format session volume for filename.
+
+    10000 → '10k-sessions', 1500000 → '1m-sessions', 500 → '500-sessions'
+    """
+    if not sessions_per_month or sessions_per_month <= 0:
+        return "0-sessions"
+    if sessions_per_month >= 1_000_000:
+        return f"{sessions_per_month // 1_000_000}m-sessions"
+    elif sessions_per_month >= 1_000:
+        return f"{sessions_per_month // 1_000}k-sessions"
+    else:
+        return f"{sessions_per_month}-sessions"
+
+
+def _generate_report_path(model_name, sessions_per_month, output_dir=None, output_path=None):
+    """Resolve full file path for a report.
+
+    Args:
+        model_name: Model name (e.g., "Claude Sonnet 4.6")
+        sessions_per_month: Volume for filename
+        output_dir: Override output directory (None = use config/default)
+        output_path: Explicit full path (overrides everything)
+
+    Returns:
+        str: Absolute path to the report file
+    """
+    if output_path:
+        return os.path.abspath(os.path.expanduser(output_path))
+
+    if output_dir is None:
+        output_dir = resolve_setting("reports", "output_dir")
+    output_dir = os.path.expanduser(output_dir)
+
+    template = resolve_setting("reports", "naming_template")
+    random_hex = os.urandom(2).hex()  # 4-char hex to prevent same-second collisions
+    timestamp = time.strftime("%Y%m%d-%H%M%S") + f"-{random_hex}"
+    model_slug = _sanitize_filename(model_name or "")
+    volume_slug = _format_volume(sessions_per_month)
+
+    filename = template.format(
+        model=model_slug, volume=volume_slug, timestamp=timestamp,
+        region="", format="md",
+    )
+    return os.path.join(output_dir, filename)
+
+
+def _build_front_matter(result, main_agent_config):
+    """Build YAML front-matter metadata block for the report file.
+
+    Returns empty string if reports.include_metadata config is False.
+    """
+    if not resolve_setting("reports", "include_metadata"):
+        return ""
+
+    inputs_str = json.dumps(main_agent_config, sort_keys=True, default=str)
+    inputs_hash = _hashlib.sha256(inputs_str.encode()).hexdigest()[:16]
+
+    # Calculate savings_pct for front-matter
+    no_cache = result.get("session_total_no_cache", 0)
+    with_cache = result.get("session_total", 0)
+    savings_pct = ((no_cache - with_cache) / no_cache * 100) if no_cache > 0 else 0
+
+    lines = ["---"]
+    lines.append(f'generated_at: "{time.strftime("%Y-%m-%dT%H:%M:%S")}"')
+    lines.append(f'model: "{main_agent_config.get("model_name", "unknown")}"')
+    lines.append(f'region: "{main_agent_config.get("region", "unknown")}"')
+    lines.append(f'sessions_per_month: {main_agent_config.get("agent_sessions_per_month", 0)}')
+    lines.append(f'session_total: {round(result.get("session_total", 0), 6)}')
+    lines.append(f'monthly_total: {round(result.get("monthly_total", 0), 2)}')
+    lines.append(f'annual_total: {round(result.get("annual_total", 0), 2)}')
+    lines.append(f'savings_pct: {round(savings_pct, 1)}')
+    lines.append(f'inputs_hash: "{inputs_hash}"')
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _try_write(file_path, content):
+    """Attempt atomic write to file_path. Returns absolute path on success, None on failure."""
+    target_dir = os.path.dirname(file_path)
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except OSError as e:
+        print(f"⚠️  Report: Cannot create directory '{target_dir}': {e}", file=sys.stderr)
+        return None
+
+    # Atomic write: write to temp file, then rename
+    tmp_path = file_path + ".tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            f.write(content)
+        os.rename(tmp_path, file_path)
+    except OSError as e:
+        print(f"⚠️  Report: Cannot write '{file_path}': {e}", file=sys.stderr)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return None
+
+    return os.path.abspath(file_path)
+
+
+def _write_report_to_file(result, main_agent_config, subagents=None, output_path=None):
+    """Write full report to markdown file with cascade fallback.
+
+    Cascade: tries output_path/configured path → default dir → returns None.
+
+    Returns:
+        str: Absolute path to written file, or None if all attempts fail.
+    """
+    model_name = main_agent_config.get("model_name", "unknown")
+    sessions = main_agent_config.get("agent_sessions_per_month", 0)
+
+    # Build content first (before touching filesystem)
+    front_matter = _build_front_matter(result, main_agent_config)
+    try:
+        body = _format_full_output(result)
+    except Exception:
+        # Fallback: write token_table + basic summary as JSON
+        body = result.get("token_table", "") + "\n\n" + json.dumps(
+            result.get("explanation", {}), indent=2, default=str)
+    content = front_matter + body
+
+    # Try writing — cascade: configured/explicit path → default dir
+    file_path = _generate_report_path(model_name, sessions, output_path=output_path)
+    written_path = _try_write(file_path, content)
+
+    if written_path is None and output_path:
+        # Explicit path failed — try default directory as fallback
+        default_path = _generate_report_path(model_name, sessions)
+        written_path = _try_write(default_path, content)
+
+    # Auto-cleanup if configured and write succeeded
+    if written_path and resolve_setting("reports", "auto_cleanup"):
+        _cleanup_old_reports()
+
+    return written_path
+
+
+def _identify_top_cost_driver(result):
+    """Identify the largest cost component for the summary."""
+    main = result.get("main_agent", {})
+    # "with_cache" = prompt-cached cost, "no_cache" = without prompt caching
+    main_cost = (main.get("with_cache") or main.get("no_cache") or {}).get("session_total", 0)
+    subagents = result.get("subagents", [])
+    sub_total = sum(sa.get("session_cost", 0) for sa in subagents)
+
+    if sub_total > main_cost and subagents:
+        top_sa = max(subagents, key=lambda x: x.get("session_cost", 0))
+        return f"sub-agent ({top_sa.get('type', 'unknown')})"
+    return "main agent (token compounding)"
+
+
+def _build_compact_summary(result, file_path):
+    """Build the compact summary dict returned to the agent.
+
+    Contains key metrics, file_path, and capacity_profile for downstream
+    use by check_capacity_fit().
+    """
+    # Calculate savings_pct
+    no_cache = result.get("session_total_no_cache", 0)
+    with_cache = result.get("session_total", 0)
+    savings_pct = ((no_cache - with_cache) / no_cache * 100) if no_cache > 0 else 0
+
+    # Safe access to main agent session cost (prompt-cache-aware)
+    main = result.get("main_agent", {})
+    cached = main.get("with_cache") or main.get("no_cache") or {}
+    main_session_cost = cached.get("session_total", 0)  # with prompt cache if available
+
+    return {
+        "file_path": file_path,
+        "sessions_per_month": result.get("sessions_per_month", 0),
+        "monthly_total": round(result.get("monthly_total", 0), 2),
+        "annual_total": round(result.get("annual_total", 0), 2),
+        "session_total": round(with_cache, 6),
+        "session_total_no_cache": round(no_cache, 6),
+        "savings_pct": round(savings_pct, 1),
+        "main_agent_session_cost": round(main_session_cost, 6),
+        "subagent_session_cost": round(
+            sum(sa.get("session_cost", 0) for sa in result.get("subagents", [])), 6),
+        "recommended_ttl": main.get("recommended_ttl"),
+        "top_cost_driver": _identify_top_cost_driver(result),
+        "capacity_profile": result.get("capacity_profile"),
+    }
+
+
+def _cleanup_old_reports(output_dir=None, max_age_days=None):
+    """Delete report files older than retention threshold.
+
+    Only deletes files matching the naming template pattern (not arbitrary .md files).
+    Derives the match regex from reports.naming_template so it adapts if the template changes.
+
+    Returns:
+        dict: {"deleted_count": int, "freed_bytes": int}
+    """
+    if output_dir is None:
+        output_dir = os.path.expanduser(resolve_setting("reports", "output_dir"))
+    if max_age_days is None:
+        max_age_days = resolve_setting("reports", "retention_days")
+
+    if not os.path.isdir(output_dir):
+        return {"deleted_count": 0, "freed_bytes": 0}
+
+    # Derive filename pattern from template
+    template = resolve_setting("reports", "naming_template")
+    pattern = _re.escape(template)
+    # Replace escaped placeholders with regex wildcards
+    pattern = pattern.replace(_re.escape("{model}"), r"[a-z0-9.\-]+")
+    pattern = pattern.replace(_re.escape("{volume}"), r"[a-z0-9\-]+")
+    pattern = pattern.replace(_re.escape("{timestamp}"), r"\d{8}-\d{6}-[a-f0-9]{4}")
+    pattern = pattern.replace(_re.escape("{region}"), r"[a-z0-9\-]*")
+    pattern = pattern.replace(_re.escape("{format}"), r"[a-z]+")
+    report_re = _re.compile(f"^{pattern}$")
+
+    cutoff = time.time() - (max_age_days * 86400)
+    deleted = 0
+    freed = 0
+
+    for f in os.listdir(output_dir):
+        if not report_re.match(f):
+            continue
+        path = os.path.join(output_dir, f)
+        if not os.path.isfile(path):
+            continue
+        if os.path.getmtime(path) < cutoff:
+            size = os.path.getsize(path)
+            try:
+                os.unlink(path)
+                deleted += 1
+                freed += size
+            except OSError:
+                pass
+
+    return {"deleted_count": deleted, "freed_bytes": freed}
 
 
 def classify_provider(name: str) -> str:
@@ -2435,8 +2698,8 @@ def calculate_agent_session_compounded_cost(
     main_agent_config,
     # Sub-agent configurations (optional)
     subagents=None,
-    # Output detail level
-    detail_level="summary",  # "summary" or "full"
+    # Report output path (optional — overrides config)
+    output_path=None,
 ):
     """Calculate total cost for an AI agent session including main agent and sub-agents.
 
@@ -2848,33 +3111,25 @@ def calculate_agent_session_compounded_cost(
 
     result["capacity_profile"] = capacity_profile
 
-    # ── Step 7: Generate token breakdown table (full mode only) ──
+    # ── Step 7: Generate token breakdown table ──
     result["token_table"] = _format_token_table(result)
     result["capacity_profile_table"] = _format_capacity_profile_table(capacity_profile)
 
-    if detail_level == "summary":
-        return {
-            "session_total": session_total,
-            "session_total_no_cache": session_total_no_cache,
-            "monthly_total": monthly_total,
-            "annual_total": annual_total,
-            "sessions_per_month": sessions_per_month,
-            "savings_pct": (session_total_no_cache - session_total) / session_total_no_cache * 100 if session_total_no_cache > 0 else 0,
-            "main_agent_session_cost": main_session_cached,
-            "subagent_session_cost": subagent_session_total,
-            "subagents_summary": [
-                {
-                    "type": sa["type"],
-                    "invocations_per_session": sa["invocations_per_session"],
-                    "cost_per_invocation": sa["cost_per_invocation"],
-                    "session_cost": sa["session_cost"],
-                }
-                for sa in subagent_cost_results
-            ],
-            "recommended_ttl": main_cost_result.get("recommended_ttl"),
-            "capacity_profile": capacity_profile,
-        }
-    return result
+    # ── Step 8: Write report to file and return compact summary ──
+    file_path = _write_report_to_file(result, main_agent_config, subagents, output_path)
+
+    if file_path is None:
+        # File write failed — fall back to full inline result with warning
+        print(
+            "⚠️  Report: Failed to write report file. Returning full result inline.\n"
+            "    This increases token usage and latency. Specify a writable folder via\n"
+            "    reports.output_dir in ~/.bedrock_skills/config.yaml or pass output_path='/writable/path/report.md'.",
+            file=sys.stderr
+        )
+        result["_file_write_failed"] = True
+        return result
+
+    return _build_compact_summary(result, file_path)
 
 
 def format_price(p):
@@ -3779,6 +4034,7 @@ def main():
     parser.add_argument("--refresh", action="store_true", help="Refresh cache from AWS Pricing API")
     parser.add_argument("--init-config", action="store_true", help="Generate commented config template at ~/.bedrock_skills/config.yaml")
     parser.add_argument("--force", action="store_true", help="Overwrite existing config file without prompting (use with --init-config)")
+    parser.add_argument("--cleanup-reports", action="store_true", help="Delete report files older than retention_days (default 30)")
     parser.add_argument("--cache-dir", type=str, default=os.path.expanduser("~/bedrock_cache"), help="Dir to read cache files")
     parser.add_argument("--quota-regions", type=str,
                         default="us-east-1,us-west-2,eu-west-1,eu-central-1,ap-northeast-1,ap-southeast-1,ap-southeast-2,ap-south-1,ca-central-1,sa-east-1",
@@ -3794,6 +4050,10 @@ def main():
     cache_dir = os.path.expanduser("~/bedrock_cache")
     if args.init_config:
         generate_config_template(force=args.force)
+        return
+    if args.cleanup_reports:
+        cleanup_result = _cleanup_old_reports()
+        print(f"Deleted {cleanup_result['deleted_count']} report(s), freed {cleanup_result['freed_bytes'] / 1024:.1f} KB")
         return
     if args.refresh:
         refresh_cache(cache_dir)
