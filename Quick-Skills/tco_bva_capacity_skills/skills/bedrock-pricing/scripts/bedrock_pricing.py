@@ -4097,9 +4097,9 @@ def calculate_evaluation_cost(
     questions_per_month,
     sessions_per_month,
     # Sampling
-    sampling_rate=0.10,                    # 10% of sessions evaluated
+    sampling_rate=None,                    # 10% of sessions evaluated (from config)
     # Built-in evaluators (fixed-price LLM judge, model chosen by AWS)
-    num_builtin_evaluators=3,              # e.g. Helpfulness, Correctness, Safety
+    num_builtin_evaluators=None,           # e.g. Helpfulness, Correctness, Safety (from config)
     builtin_input_price=2.40,              # per 1M tokens (from AC cache)
     builtin_output_price=12.00,            # per 1M tokens (from AC cache)
     # Custom LLM-as-a-Judge evaluators (you pick the model)
@@ -4152,6 +4152,10 @@ def calculate_evaluation_cost(
     # Input validation
     if tools_invoked > tools_passed_to_agent:
         raise ValueError(f"tools_invoked ({tools_invoked}) cannot exceed tools_passed_to_agent ({tools_passed_to_agent})")
+
+    # Resolve defaults from config (explicit values passed by caller always win)
+    sampling_rate = resolve_setting("agentcore_defaults", "eval_sampling_rate", sampling_rate)
+    num_builtin_evaluators = resolve_setting("agentcore_defaults", "eval_builtin_evaluators", num_builtin_evaluators)
 
     # Derive evaluated volume
     evaluated_sessions = sessions_per_month * sampling_rate
@@ -5003,10 +5007,10 @@ def calculate_business_value(
         human_cost_per_hour (float): Fully loaded cost (default $75).
         revenue_per_hour (float): Revenue per productive hour (default $300).
         total_customers (int): Customer base (default 0 = skip Dim 2).
-        churn_without/with_ai_pct (float): Monthly churn rates (default 3.0/2.5%).
-        revenue_per_customer_year (float): Annual revenue/customer (default $5000).
+        churn_without/with_ai_pct (float): Monthly churn rates (default 2.0/1.0% from config).
+        revenue_per_customer_year (float): Annual revenue/customer (default $1000).
         annual_sales_revenue (float): Annual sales (default 0 = skip Dim 3).
-        sales_increase_pct (float): AI sales uplift (default 2.0%).
+        sales_increase_pct (float): AI sales uplift (default 10.0% from config).
         value_tiers (dict | None): Override default tiers. Each tier key maps to
             {effectiveness: float, efficiency: float}.
 
@@ -5026,14 +5030,25 @@ def calculate_business_value(
     churn_with_ai_pct = resolve_setting("business_value_defaults", "churn_with_ai_pct", churn_with_ai_pct)
     sales_increase_pct = resolve_setting("business_value_defaults", "sales_increase_pct", sales_increase_pct)
 
+    # Resolve effectiveness/efficiency from config (controls the Moderate tier)
+    moderate_effectiveness = resolve_setting("business_value_defaults", "agent_effectiveness_pct")
+    moderate_efficiency = resolve_setting("business_value_defaults", "efficiency_factor_pct")
+
     time_saved_min = time_without_ai_min - time_with_ai_min
 
     # --- Dimension 1: Time Savings (all 3 tiers) ---
     dim1_cost_savings = {}
     dim1_productivity = {}
 
-    # Allow caller to override default tiers
-    tiers = value_tiers if value_tiers is not None else BUSINESS_VALUE_TIERS
+    # Allow caller to override default tiers; otherwise build from config
+    if value_tiers is not None:
+        tiers = value_tiers
+    else:
+        tiers = {
+            "Conservative": {"effectiveness": 0.50, "efficiency": 0.50},
+            "Moderate":     {"effectiveness": moderate_effectiveness, "efficiency": moderate_efficiency},
+            "Optimistic":   {"effectiveness": 0.80, "efficiency": 0.70},
+        }
 
     for tier_name, params in tiers.items():
         eff = params["effectiveness"]
