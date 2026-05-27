@@ -814,6 +814,26 @@ def _build_compact_summary(result, file_path):
     cached = main.get("with_cache") or main.get("no_cache") or {}
     main_session_cost = cached.get("session_total", 0)  # with prompt cache if available
 
+    # Build per-sub-agent summary with caching status
+    subagents_summary = []
+    for sa in result.get("subagents", []):
+        cost_detail = sa.get("cost_detail", {})
+        sa_summary = {
+            "type": sa.get("type"),
+            "session_cost": round(sa.get("session_cost", 0), 6),
+            "caching_applied": cost_detail.get("caching_applied", False),
+        }
+        if cost_detail.get("caching_applied"):
+            sa_summary["cache_savings_pct"] = round(cost_detail.get("cache_savings_pct", 0), 1)
+        else:
+            caching_str = cost_detail.get("explanation", {}).get("pricing", {}).get("caching", "")
+            if "Not applied" in caching_str:
+                reason = caching_str.removeprefix("Not applied (")
+                if reason.endswith(")"):
+                    reason = reason[:-1]
+                sa_summary["cache_not_applied_reason"] = reason
+        subagents_summary.append(sa_summary)
+
     return {
         "file_path": file_path,
         "sessions_per_month": result.get("sessions_per_month", 0),
@@ -825,6 +845,7 @@ def _build_compact_summary(result, file_path):
         "main_agent_session_cost": round(main_session_cost, 6),
         "subagent_session_cost": round(
             sum(sa.get("session_cost", 0) for sa in result.get("subagents", [])), 6),
+        "subagents_summary": subagents_summary,
         "recommended_ttl": main.get("recommended_ttl"),
         "top_cost_driver": _identify_top_cost_driver(result),
         "capacity_profile": result.get("capacity_profile"),
@@ -2188,14 +2209,11 @@ def calculate_rag_subagent_tokens(
     # NOTE: Interleaved tool call order (retrieve → rerank → retrieve → rerank) could be
     # added later if needed. For now, sequential grouping is assumed.
 
-    # NOTE: Prompt caching is NOT modeled for this sub-agent. The sub-agent's
-    # system_prompt + tool_specs (~600-700 tokens) is typically below the minimum
-    # cache threshold for most models (4,096 for Haiku 4.5, 2,048 for Sonnet 4.6).
-    # The tool exchange history does cross the threshold mid-invocation, but the
-    # savings are marginal on cheap models (Haiku at $1/M). The real cost savings
-    # come from the architecture decision (isolating RAG in a sub-agent to avoid
-    # compounding in the main agent). May revisit caching here in the future if
-    # sub-agent system prompts grow large (4K+ tokens).
+    # NOTE: Prompt caching is modeled via calculate_subagent_cost() when cache prices
+    # are provided. The cacheable prefix (system_prompt + tool_specs + query) is
+    # identical across all LLM cycles within a single invocation. Cycle 1 pays
+    # cache_write, cycles 2+ pay cache_read. Caching is only applied when the prefix
+    # meets the model's minimum threshold (e.g., 1024 for Nova, 2048 for Sonnet).
 
     Args:
         system_prompt_tokens (int): Sub-agent system prompt (default 500).
@@ -2316,6 +2334,9 @@ def calculate_rag_subagent_tokens(
         },
     }
 
+    # Cacheable within this invocation's cycles (not across invocations — the query changes)
+    intra_invocation_cacheable_prefix = fixed_per_call + input_query_tokens
+
     result = {
         "assumptions": {
             "system_prompt_tokens": system_prompt_tokens,
@@ -2340,6 +2361,7 @@ def calculate_rag_subagent_tokens(
         "total_output": total_output,
         "total_tokens": total_input + total_output,
         "output_tokens_to_main_agent": output_tokens,
+        "intra_invocation_cacheable_prefix": intra_invocation_cacheable_prefix,
         "explanation": explanation,
     }
 
@@ -2350,6 +2372,7 @@ def calculate_rag_subagent_tokens(
             "total_output": result["total_output"],
             "total_tokens": result["total_tokens"],
             "output_tokens_to_main_agent": result["output_tokens_to_main_agent"],
+            "intra_invocation_cacheable_prefix": result["intra_invocation_cacheable_prefix"],
         }
     return result
 
@@ -2380,14 +2403,11 @@ def calculate_research_subagent_tokens(
     The model is stateless — every call sends system_prompt + tool_specs + full
     accumulated history. Token compounding applies within this invocation.
 
-    # NOTE: Prompt caching is NOT modeled for this sub-agent. The sub-agent's
-    # system_prompt + tool_specs (~600 tokens) is below the minimum cache threshold
-    # for most models (4,096 for Haiku 4.5, 2,048 for Sonnet 4.6). The accumulated
-    # search/fetch history does cross the threshold after 2-3 iterations, but the
-    # savings are marginal on cheap models (Haiku at $1/M). The real cost savings
-    # come from isolating research in a sub-agent so the main agent doesn't carry
-    # 50K+ tokens of web content in its history. May revisit caching here in the
-    # future if sub-agent system prompts grow large (4K+ tokens).
+    # NOTE: Prompt caching is modeled via calculate_subagent_cost() when cache prices
+    # are provided. The cacheable prefix (system_prompt + tool_specs + query) is
+    # identical across all LLM cycles within a single invocation. Cycle 1 pays
+    # cache_write, cycles 2+ pay cache_read. Caching is only applied when the prefix
+    # meets the model's minimum threshold (e.g., 1024 for Nova, 2048 for Sonnet).
 
     Args:
         system_prompt_tokens (int): Sub-agent system prompt (default 500).
@@ -2532,6 +2552,9 @@ def calculate_research_subagent_tokens(
         },
     }
 
+    # Cacheable within this invocation's cycles (not across invocations — the query changes)
+    intra_invocation_cacheable_prefix = fixed_per_call + input_query_tokens
+
     result = {
         "assumptions": {
             "system_prompt_tokens": system_prompt_tokens,
@@ -2555,6 +2578,7 @@ def calculate_research_subagent_tokens(
         "total_output": total_output,
         "total_tokens": total_input + total_output,
         "output_tokens_to_main_agent": output_tokens,
+        "intra_invocation_cacheable_prefix": intra_invocation_cacheable_prefix,
         "explanation": explanation,
     }
 
@@ -2565,6 +2589,7 @@ def calculate_research_subagent_tokens(
             "total_output": result["total_output"],
             "total_tokens": result["total_tokens"],
             "output_tokens_to_main_agent": result["output_tokens_to_main_agent"],
+            "intra_invocation_cacheable_prefix": result["intra_invocation_cacheable_prefix"],
         }
     return result
 
@@ -2573,66 +2598,157 @@ def calculate_subagent_cost(
     token_result,
     input_price,
     output_price,
+    cache_read_price=None,
+    cache_write_price=None,
+    min_cache_tokens=None,
 ):
-    """Calculate cost for a sub-agent invocation (RAG or research).
+    """Calculate cost for a sub-agent invocation (RAG or research) with optional caching.
 
-    Simple cost calculation: total_input × input_price + total_output × output_price.
-    No prompt caching is applied (see notes in sub-agent token functions for rationale).
+    Models intra-invocation caching: within a single invocation, the fixed prefix
+    (system_prompt + tool_specs + query) is identical across all LLM cycles. When
+    caching is supported and the prefix meets the model's minimum threshold:
+      - Cycle 1: prefix charged at cache_write_price (0.0 for free-write models), remainder at input_price
+      - Cycles 2+: prefix charged at cache_read_price, remainder at input_price
+
+    When cache_read_price is None or prefix is below min_cache_tokens, falls back to
+    simple input_price × total_input calculation (no caching).
+
+    Limitation: cross-invocation caching is not modeled. When a sub-agent is called
+    multiple times per session (questions_invoked > 1), the fixed_per_call portion
+    (system_prompt + tool_specs) is stable across invocations and could be cache-read
+    on invocations 2+ if the TTL holds. This is not yet captured here.
 
     Works with the output of either calculate_rag_subagent_tokens() or
     calculate_research_subagent_tokens().
 
     Args:
         token_result (dict): Output from calculate_rag_subagent_tokens() or
-            calculate_research_subagent_tokens(). Must contain 'total_input' and
-            'total_output' keys.
+            calculate_research_subagent_tokens(). Must contain 'total_input',
+            'total_output', and 'intra_invocation_cacheable_prefix' keys.
         input_price (float): Input token price $/M for the sub-agent's model (REQUIRED).
         output_price (float): Output token price $/M for the sub-agent's model (REQUIRED).
+        cache_read_price (float|None): Cache read price $/M. None = caching not supported.
+        cache_write_price (float|None): Cache write price $/M. Use 0.0 for models with
+            free cache writes (e.g., Nova 2.0 Lite). None = caching not supported.
+        min_cache_tokens (int|None): Minimum prefix size to qualify for caching (REQUIRED
+            when cache_read_price is provided). Model-specific — e.g., 1024 for Nova,
+            2048 for Sonnet 4.6, 4096 for Haiku 4.5.
 
     Returns:
-        dict: input_cost, output_cost, total_cost, per_cycle_costs,
-            output_tokens_to_main_agent, explanation.
+        dict: input_cost, output_cost, total_cost, cache_savings, caching_applied,
+            per_cycle_costs, output_tokens_to_main_agent, explanation.
+
+    Raises:
+        ValueError: If cache_read_price is provided but min_cache_tokens is None.
     """
     total_input = token_result["total_input"]
     total_output = token_result["total_output"]
+    cacheable_prefix = token_result.get("intra_invocation_cacheable_prefix", 0)
+    cycles = token_result.get("cycles", [])
 
-    input_cost = (total_input / 1_000_000) * input_price
-    output_cost = (total_output / 1_000_000) * output_price
-    total_cost = input_cost + output_cost
+    # Validate: if caching prices are provided, min_cache_tokens is required
+    if cache_read_price is not None and min_cache_tokens is None:
+        raise ValueError(
+            "min_cache_tokens is required when cache_read_price is provided. "
+            "Use the model's minimum cache threshold (e.g., 1024 for Nova, 2048 for Sonnet, 4096 for Haiku)."
+        )
 
-    # Per-cycle cost breakdown
+    # Caching requires cache_read_price; cache_write_price=None means not supported,
+    # cache_write_price=0.0 means free writes (e.g., Nova 2.0 Lite)
+    caching_applied = (
+        cache_read_price is not None
+        and cache_write_price is not None
+        and cacheable_prefix >= (min_cache_tokens or 0)
+        and len(cycles) > 1
+    )
+
     per_cycle_costs = []
-    for cyc in token_result["cycles"]:
-        cyc_input_cost = (cyc["input_tokens"] / 1_000_000) * input_price
-        cyc_output_cost = (cyc["output_tokens"] / 1_000_000) * output_price
+    total_input_cost = 0.0
+    total_input_cost_no_cache = 0.0
+
+    for cyc in cycles:
+        cyc_input = cyc["input_tokens"]
+        cyc_output = cyc["output_tokens"]
+        cyc_output_cost = (cyc_output / 1_000_000) * output_price
+
+        if caching_applied:
+            non_cached_tokens = cyc_input - cacheable_prefix
+            if cyc["cycle"] == 1:
+                prefix_cost = (cacheable_prefix / 1_000_000) * cache_write_price
+                remainder_cost = (non_cached_tokens / 1_000_000) * input_price
+                cache_type = "write"
+            else:
+                prefix_cost = (cacheable_prefix / 1_000_000) * cache_read_price
+                remainder_cost = (non_cached_tokens / 1_000_000) * input_price
+                cache_type = "read"
+            cyc_input_cost = prefix_cost + remainder_cost
+        else:
+            cyc_input_cost = (cyc_input / 1_000_000) * input_price
+            cache_type = None
+
+        cyc_no_cache_input_cost = (cyc_input / 1_000_000) * input_price
+        total_input_cost += cyc_input_cost
+        total_input_cost_no_cache += cyc_no_cache_input_cost
+
         per_cycle_costs.append({
             "cycle": cyc["cycle"],
-            "input_tokens": cyc["input_tokens"],
-            "output_tokens": cyc["output_tokens"],
+            "input_tokens": cyc_input,
+            "output_tokens": cyc_output,
             "input_cost": cyc_input_cost,
             "output_cost": cyc_output_cost,
             "cycle_cost": cyc_input_cost + cyc_output_cost,
             "type": cyc["type"],
+            "cache_type": cache_type,
         })
+
+    output_cost = (total_output / 1_000_000) * output_price
+    total_cost = total_input_cost + output_cost
+    total_cost_no_cache = total_input_cost_no_cache + output_cost
+    cache_savings = total_cost_no_cache - total_cost if caching_applied else 0.0
+    cache_savings_pct = (cache_savings / total_cost_no_cache * 100) if caching_applied and total_cost_no_cache > 0 else 0.0
+
+    if caching_applied:
+        caching_detail = (
+            f"Applied (prefix={_fmt(cacheable_prefix)} tokens >= threshold={_fmt(min_cache_tokens)}). "
+            f"Cycle 1: write @ ${cache_write_price}/M, cycles 2-{len(cycles)}: read @ ${cache_read_price}/M. "
+            f"Savings: ${cache_savings:.6f} ({cache_savings_pct:.1f}%)"
+        )
+    else:
+        if cache_read_price is None:
+            reason = "model does not support caching"
+        elif cache_write_price is None:
+            reason = "model does not support caching"
+        elif cacheable_prefix < min_cache_tokens:
+            reason = f"prefix ({_fmt(cacheable_prefix)} tokens) below threshold ({_fmt(min_cache_tokens)})"
+        else:
+            reason = "single-cycle invocation (no reuse opportunity)"
+        caching_detail = f"Not applied ({reason})"
 
     explanation = {
         "pricing": {
             "input_price": f"${input_price}/M tokens",
             "output_price": f"${output_price}/M tokens",
-            "caching": "Not applied (sub-agent prefix below minimum cache threshold)",
+            "cache_read_price": f"${cache_read_price}/M tokens" if cache_read_price is not None else "N/A",
+            "cache_write_price": f"${cache_write_price}/M tokens" if cache_write_price is not None else ("free" if cache_write_price == 0.0 else "N/A"),
+            "caching": caching_detail,
         },
         "cost_breakdown": {
-            "input": f"{_fmt(total_input)} tokens × ${input_price}/M = ${input_cost:.6f}",
+            "input": f"{_fmt(total_input)} tokens → ${total_input_cost:.6f} (with caching)" if caching_applied else f"{_fmt(total_input)} tokens × ${input_price}/M = ${total_input_cost:.6f}",
             "output": f"{_fmt(total_output)} tokens × ${output_price}/M = ${output_cost:.6f}",
-            "total": f"${input_cost:.6f} + ${output_cost:.6f} = ${total_cost:.6f}",
+            "total": f"${total_input_cost:.6f} + ${output_cost:.6f} = ${total_cost:.6f}",
         },
         "output_to_main_agent": f"{_fmt(token_result['output_tokens_to_main_agent'])} tokens (becomes tool_result in main agent)",
     }
 
     return {
-        "input_cost": input_cost,
+        "input_cost": total_input_cost,
         "output_cost": output_cost,
         "total_cost": total_cost,
+        "total_cost_no_cache": total_cost_no_cache,
+        "cache_savings": cache_savings,
+        "cache_savings_pct": cache_savings_pct,
+        "caching_applied": caching_applied,
+        "intra_invocation_cacheable_prefix": cacheable_prefix,
         "per_cycle_costs": per_cycle_costs,
         "output_tokens_to_main_agent": token_result["output_tokens_to_main_agent"],
         "explanation": explanation,
@@ -3109,7 +3225,13 @@ def calculate_agent_session_compounded_cost(
         subagents (list|None): Optional list of sub-agent configs. Each dict:
             "type" (str): "rag" or "research".
             "token_params" (dict): Parameters for the sub-agent (see below).
-            "model_prices" (dict): {"input_price": float, "output_price": float}
+            "model_prices" (dict): Sub-agent model pricing. Keys:
+                "input_price" (float): REQUIRED. Input token price $/M.
+                "output_price" (float): REQUIRED. Output token price $/M.
+                "cache_read_price" (float|None): Optional. Cache read $/M. Omit if model has no caching.
+                "cache_write_price" (float|None): Optional. Cache write $/M. Use 0.0 for free-write models.
+                "min_cache_tokens" (int): REQUIRED when cache_read_price is provided. Model's minimum
+                    cache threshold (e.g., 1024 for Nova, 2048 for Sonnet, 4096 for Haiku).
             "questions_invoked" (int):
                 0 = pre-session (output added to main agent system_prompt, cached).
                 1-N = invoked as tool in first N questions.
@@ -3171,7 +3293,7 @@ def calculate_agent_session_compounded_cost(
             }
         )
 
-        # Multi-agent (main + RAG + research):
+        # Multi-agent (main + RAG with caching + research without caching):
         calculate_agent_session_compounded_cost(
             main_agent_config={
                 "input_price": 3.0,
@@ -3187,7 +3309,13 @@ def calculate_agent_session_compounded_cost(
                 {
                     "type": "rag",
                     "token_params": {"rag_n_chunks": 10, "output_tokens": 300},
-                    "model_prices": {"input_price": 1.0, "output_price": 5.0},
+                    "model_prices": {
+                        "input_price": 1.0,
+                        "output_price": 5.0,
+                        "cache_read_price": 0.10,
+                        "cache_write_price": 1.25,
+                        "min_cache_tokens": 4096,
+                    },
                     "questions_invoked": 3,
                 },
                 {
@@ -3328,11 +3456,14 @@ def calculate_agent_session_compounded_cost(
         token_result = sa_res["token_result"]
         qi = sa_config["questions_invoked"]
 
-        # Cost per invocation
+        # Cost per invocation (with caching if prices provided)
         cost_per_invocation = calculate_subagent_cost(
             token_result,
             input_price=model_prices["input_price"],
             output_price=model_prices["output_price"],
+            cache_read_price=model_prices.get("cache_read_price"),
+            cache_write_price=model_prices.get("cache_write_price"),
+            min_cache_tokens=model_prices.get("min_cache_tokens"),
         )
 
         # Number of invocations per session
@@ -3910,7 +4041,19 @@ def _format_full_output(result, cache_status=None, models_found=None, all_tiers=
         subagent_total = sum(sa["session_cost"] for sa in subagent_cost_results)
         lines.append(f"| Sub-agent session cost | ${subagent_total:.6f} |")
         for sa in subagent_cost_results:
-            lines.append(f"|   — {sa['type'].title()} ({sa['invocations_per_session']}x) | ${sa['session_cost']:.6f} |")
+            cost_detail = sa.get("cost_detail", {})
+            if cost_detail.get("caching_applied"):
+                cache_note = f" (cached, saves {cost_detail['cache_savings_pct']:.0f}%)"
+            else:
+                cache_reason = cost_detail.get("explanation", {}).get("pricing", {}).get("caching", "")
+                if "Not applied" in cache_reason:
+                    reason_short = cache_reason.removeprefix("Not applied (")
+                    if reason_short.endswith(")"):
+                        reason_short = reason_short[:-1]
+                    cache_note = f" (no cache: {reason_short})"
+                else:
+                    cache_note = ""
+            lines.append(f"|   — {sa['type'].title()} ({sa['invocations_per_session']}x) | ${sa['session_cost']:.6f}{cache_note} |")
 
     lines.append(f"| Recommended TTL | {main.get('recommended_ttl', 'N/A')} |")
     lines.append("")
