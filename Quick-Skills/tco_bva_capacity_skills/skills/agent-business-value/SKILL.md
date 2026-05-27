@@ -103,21 +103,68 @@ result = calculate_business_value(
     # Dim 3 (set annual_sales_revenue=0 to skip)
     annual_sales_revenue=100_000_000,
     sales_increase_pct=10.0,
+    # Report output (optional — session directory from create_report_session)
+    output_dir=session_dir,
 )
+# Returns compact summary: file_path, grand_total_annual, roi_pct, payback_days, etc.
 ```
+
+The function writes a detailed report to a file and returns a compact summary dict. See "Report Output" section below.
 
 ### 6. Present Results
 
+The function returns a compact summary. Present it as a markdown table:
+
+```python
+# Example compact summary (values are illustrative):
+{
+    "file_path": "/Users/x/bedrock_reports/acme-helpdesk_1m-sessions_20260526-143022-a1b2/business-value.md",
+    "grand_total_annual": 5400000.00,
+    "net_value_annual": 4866000.00,
+    "roi_pct": 912,
+    "payback_days": 36,
+    "dim1_moderate_annual": 4680000.00,
+    "dim2_annual": 500000.00,
+    "dim3_annual": 220000.00,
+    "agent_cost_annual": 534000.00,
+    "sessions_per_month": 1000000,
+}
+```
+
 Structure the output as:
-1. **Selected dimensions** — which ones were calculated
-2. **Assumptions table** — all inputs with sources
-3. **Per-dimension results** — show all 3 tiers (conservative/moderate/aggressive) for Dim 1
-4. **Grand total** — combined value, net of agent cost, ROI %, payback days
-5. **Research citations** — BCG, Harvard, Gartner references that support defaults
-6. **Sensitivity note** — which parameters have the biggest impact
+1. **Key metrics** — ROI, payback, net value from the compact summary
+2. **File reference** — point user to the full report for detailed breakdown
+3. **Grand total** — combined value, net of agent cost
 
 - Show annual projections — monthly looks small to stakeholders
-- Auto-detect agent cost from prior pricing runs in the conversation
+- If `_file_write_failed` is True, the full result is inline — format all dimensions from the result dict
+
+## Report Output
+
+The function always writes a detailed report to a markdown file and returns a compact summary.
+
+### Session Directory Workflow
+
+When running multiple calculations for the same user question, group reports in a session directory:
+
+```python
+# Create session directory once per user question
+session_dir = create_report_session(label="acme-roi-analysis", volume=1000000)
+
+# BVA calculation writes to the session dir
+result = calculate_business_value(..., output_dir=session_dir)
+```
+
+### Failure Behavior
+
+If the report cannot be written (unwritable directory), the function:
+1. Tries the session directory
+2. Falls back to a flat file in the default reports directory
+3. If all writes fail: returns the full result dict inline with `_file_write_failed: True`
+
+### Cleanup
+
+Reports are subject to auto-cleanup after the configured retention period (`reports.retention_days`, default 30 days). Files in session directories are deleted along with the directory.
 
 ### 7. Offer Follow-ups
 
@@ -158,7 +205,7 @@ See the `business_value_defaults` section in the config template for overridable
 
 ## Explanation Rendering
 
-`result["explanation"]` contains:
+The detailed breakdown is written to the report file. It contains:
 
 | Section | What it shows |
 |---------|---------------|
@@ -168,10 +215,11 @@ See the `business_value_defaults` section in the config template for overridable
 | `summary` | Grand total, net value, ROI, payback period |
 
 ### Rules for rendering:
-- Default: show summary with per-dimension totals and ROI
-- On demand: format full explanation as markdown
-- Always use markdown — never HTML artifacts or `<details>` tags
+- Default: present the compact summary (ROI, payback, net value), mention file_path for full details
+- If user asks for per-dimension breakdown: direct them to the report file
+- If `_file_write_failed` is True: the full result is inline — format all dimensions from the explanation dict
 - Always show all 3 tiers for Dim 1 — gives stakeholders a range
+- Always use markdown — never HTML artifacts or `<details>` tags
 
 ## Related Skills
 
