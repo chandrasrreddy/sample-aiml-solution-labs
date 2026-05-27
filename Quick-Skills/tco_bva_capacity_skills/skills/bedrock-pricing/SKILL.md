@@ -146,6 +146,8 @@ prices = extract_bedrock_model_prices(selected_results, tier="Standard", variant
 
 A model supports prompt caching if `cache_read` and `cache_write` keys exist and are non-None in the extracted prices. Some models (e.g., Amazon Nova) have $0.00 cache write — prompt caching is free for writes.
 
+**This applies to sub-agent models too.** For each sub-agent model that supports prompt caching (has non-None `cache_read`/`cache_write` in pricing data), include `cache_read_price` and `cache_write_price` in the sub-agent's `model_prices` dict. Do NOT skip caching for sub-agents when their model supports it.
+
 ### 5. Present Assumptions
 
 Show all parameters and their values. Ask the user to confirm before calculating.
@@ -164,6 +166,7 @@ Show all parameters and their values. Ask the user to confirm before calculating
 - Sub-agent type (RAG, research)
 - Which questions invoke the sub-agent (or pre-session)
 - Sub-agent model and prices
+- Whether prompt caching is supported and enabled for the sub-agent model
 - Key sub-agent params (RAG: chunks, chunk size; Research: iterations, fetch probability)
 
 Only proceed to calculation after user confirms or adjusts values.
@@ -225,7 +228,12 @@ result = calculate_agent_session_compounded_cost(
                 "rag_chunk_size": 300,
                 "output_tokens": 300,
             },
-            "model_prices": {"input_price": 1.0, "output_price": 5.0},
+            "model_prices": {
+                "input_price": 1.0,
+                "output_price": 5.0,
+                "cache_read_price": 0.1,   # include if model supports caching
+                "cache_write_price": 1.25, # include if model supports caching
+            },
             "questions_invoked": 3,
         },
         {
@@ -235,7 +243,7 @@ result = calculate_agent_session_compounded_cost(
                 "fetch_probability": 0.5,
                 "output_tokens": 1000,
             },
-            "model_prices": {"input_price": 1.0, "output_price": 5.0},
+            "model_prices": {"input_price": 1.0, "output_price": 5.0},  # no caching if model doesn't support it
             "questions_invoked": 0,
         },
     ],
