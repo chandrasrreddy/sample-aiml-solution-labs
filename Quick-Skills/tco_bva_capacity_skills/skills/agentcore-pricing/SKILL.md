@@ -111,9 +111,13 @@ result = calculate_agentcore_cost(
     peak_memory_gb=4,
     io_wait_pct=0.70,
     idle_time_between_questions_s=30,
+    # Report output (optional — session directory from create_report_session)
+    output_dir=session_dir,
 )
-# Returns: runtime, gateway, memory, browser, code_interpreter, total_monthly, total_annual
+# Returns compact summary: file_path, total_monthly, total_annual, component breakdowns
 ```
+
+The function writes a detailed report to a file and returns a compact summary dict. See "Report Output" section below.
 
 ### 5. Calculate Evaluations (if requested)
 
@@ -136,12 +140,78 @@ eval_result = calculate_evaluation_cost(
 
 ### 7. Present Results
 
-1. Show per-component breakdown as a markdown table (Runtime, Gateway, Memory, etc.)
-2. Show monthly and annual totals
-3. Highlight the I/O wait benefit: "vCPU is free during I/O wait — {io_wait_pct}% of runtime is idle"
-4. Offer: *"Want to see the step-by-step breakdown?"*
+The function returns a compact summary with key metrics. Present it as a markdown table:
 
-- If user asks, read `result["explanation"]` (already computed) and format as markdown
+```python
+# Example compact summary (values are illustrative):
+{
+    "file_path": "/Users/x/bedrock_reports/claude-sonnet-4.6_1m-sessions_20260526-143022-a1b2/agentcore.md",
+    "total_monthly": 1234.56,
+    "total_annual": 14814.72,
+    "runtime_monthly": 800.00,
+    "gateway_monthly": 300.00,
+    "memory_monthly": 134.56,
+    "browser_monthly": 0.00,
+    "code_interpreter_monthly": 0.00,
+    "sessions_per_month": 200000,
+    "questions_per_month": 1000000,
+    "top_cost_component": "runtime (65%)",
+}
+```
+
+- Present the compact summary as a markdown table
+- Include `file_path` so the user knows where the full report is
+- Highlight the top cost component
+- If the user asks for detailed breakdown, direct them to the report file
+
+### 8. Completeness Check (MANDATORY — DO NOT SKIP)
+
+Before presenting final results to the user, verify ALL applicable items below. Do NOT present results until every applicable check passes.
+
+| # | Check | Condition | Action if not done |
+|---|-------|-----------|-------------------|
+| 1 | **Combined total presented** | AgentCore was calculated alongside model inference | Present model cost + AgentCore cost + grand total — never AgentCore in isolation without context |
+| 2 | **Reports in session directory** | Model inference was also calculated | Use `create_report_session()` and write both `bedrock-pricing.md` and `agentcore.md` to the same session directory |
+| 3 | **Only requested components included** | User specified which components (Runtime, Gateway, Memory, etc.) | Do NOT auto-add components the user didn't mention — only Runtime, Gateway, Memory are defaults for agentic workloads |
+| 4 | **All use cases covered** | User provided multiple use cases or scenarios | Each use case gets its own AgentCore calculation with appropriate parameters |
+| 5 | **Prices from cache** | Any calculation was performed | All component prices came from `query_agentcore_pricing()` — never hardcoded or assumed |
+
+**If any applicable check fails, go back and complete it before responding.**
+
+## Report Output
+
+The function always writes a detailed report to a markdown file and returns a compact summary.
+
+### Session Directory Workflow
+
+When running multiple calculations for the same user question, group reports in a session directory:
+
+```python
+# Create session directory once per user question
+session_dir = create_report_session(model_name="Claude Sonnet 4.6", volume=1000000)
+
+# All calculations write to the same session dir
+result = calculate_agentcore_cost(..., output_dir=session_dir)
+eval_result = calculate_evaluation_cost(..., output_dir=session_dir)
+```
+
+The session directory contains all related reports:
+```
+~/bedrock_reports/claude-sonnet-4.6_1m-sessions_20260526-143022-a1b2/
+├── agentcore.md
+└── evaluations.md
+```
+
+### Failure Behavior
+
+If the report cannot be written (unwritable directory), the function:
+1. Tries the session directory
+2. Falls back to a flat file in the default reports directory
+3. If all writes fail: returns the full result dict inline with `_file_write_failed: True`
+
+### Cleanup
+
+Reports are subject to auto-cleanup after the configured retention period (`reports.retention_days`, default 30 days). Files in session directories are deleted along with the directory.
 
 ## Multi-Agent Architecture
 
@@ -207,7 +277,7 @@ See the `agentcore_defaults` section in the config template for overridable sett
 
 ## Explanation Rendering
 
-`result["explanation"]` contains these sections:
+The detailed breakdown is written to the report file. It contains these sections:
 
 | Section | What it shows |
 |---------|---------------|
@@ -219,9 +289,11 @@ See the `agentcore_defaults` section in the config template for overridable sett
 | `cost_composition` | Percentage breakdown by component |
 
 ### Rules for rendering:
-- Default: show summary table only, offer breakdown on demand
+- Default: present the compact summary table, mention file_path for full details
+- If user asks for breakdown: direct them to the report file
+- If `_file_write_failed` is True: the full result is inline — format the explanation dict as markdown
 - Always use markdown — never HTML artifacts or `<details>` tags
-- Never re-compute — the explanation dict is already in memory
+- Never re-compute — the explanation dict is already in the report file
 
 ## Related Skills
 

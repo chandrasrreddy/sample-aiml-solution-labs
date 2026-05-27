@@ -1,3 +1,9 @@
+# Kiro workspace files
+.kiro/
+
+# Tests (local only)
+tests/
+
 # Internal skills — not published to GitHub
 skills/bedrock-cost-qa/
 skills/bedrock-cost-test-generator/

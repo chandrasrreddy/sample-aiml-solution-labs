@@ -832,10 +832,10 @@ def _build_compact_summary(result, file_path):
 
 
 def _cleanup_old_reports(output_dir=None, max_age_days=None):
-    """Delete report files older than retention threshold.
+    """Delete report files and session directories older than retention threshold.
 
-    Only deletes files matching the naming template pattern (not arbitrary .md files).
-    Derives the match regex from reports.naming_template so it adapts if the template changes.
+    For flat files: matches naming template pattern, checks file mtime.
+    For session directories: checks directory mtime only, deletes entire dir.
 
     Returns:
         dict: {"deleted_count": int, "freed_bytes": int}
@@ -848,10 +848,9 @@ def _cleanup_old_reports(output_dir=None, max_age_days=None):
     if not os.path.isdir(output_dir):
         return {"deleted_count": 0, "freed_bytes": 0}
 
-    # Derive filename pattern from template
+    # Derive filename pattern from template (for flat bedrock pricing files)
     template = resolve_setting("reports", "naming_template")
     pattern = _re.escape(template)
-    # Replace escaped placeholders with regex wildcards
     pattern = pattern.replace(_re.escape("{model}"), r"[a-z0-9.\-]+")
     pattern = pattern.replace(_re.escape("{volume}"), r"[a-z0-9\-]+")
     pattern = pattern.replace(_re.escape("{timestamp}"), r"\d{8}-\d{6}-[a-f0-9]{4}")
@@ -859,14 +858,35 @@ def _cleanup_old_reports(output_dir=None, max_age_days=None):
     pattern = pattern.replace(_re.escape("{format}"), r"[a-z]+")
     report_re = _re.compile(f"^{pattern}$")
 
+    # Pattern for typed flat files (agentcore, eval, bva)
+    typed_re = _re.compile(r"^(agentcore|eval|bva)_[a-z0-9\-]+_\d{8}-\d{6}-[a-f0-9]{4}\.md$")
+
     cutoff = time.time() - (max_age_days * 86400)
     deleted = 0
     freed = 0
 
     for f in os.listdir(output_dir):
-        if not report_re.match(f):
-            continue
         path = os.path.join(output_dir, f)
+
+        # Handle session directories
+        if os.path.isdir(path):
+            if os.path.getmtime(path) < cutoff:
+                # Calculate total size before deletion
+                dir_size = sum(
+                    os.path.getsize(os.path.join(dp, fn))
+                    for dp, _, fns in os.walk(path) for fn in fns
+                )
+                try:
+                    _shutil.rmtree(path)
+                    deleted += 1
+                    freed += dir_size
+                except OSError:
+                    pass
+            continue
+
+        # Handle flat files (bedrock naming template or typed prefix)
+        if not (report_re.match(f) or typed_re.match(f)):
+            continue
         if not os.path.isfile(path):
             continue
         if os.path.getmtime(path) < cutoff:
@@ -879,6 +899,353 @@ def _cleanup_old_reports(output_dir=None, max_age_days=None):
                 pass
 
     return {"deleted_count": deleted, "freed_bytes": freed}
+
+
+# ── Report filename constants ──
+_BEDROCK_REPORT_FILENAME = "bedrock-pricing.md"
+_AGENTCORE_REPORT_FILENAME = "agentcore.md"
+_EVAL_REPORT_FILENAME = "evaluations.md"
+_BVA_REPORT_FILENAME = "business-value.md"
+
+import shutil as _shutil
+
+
+def create_report_session(model_name=None, volume=None, label=None):
+    """Create a session directory for grouping related reports. Returns absolute path.
+
+    The naming convention is enforced by this function — callers pass raw inputs
+    and the function handles sanitization, formatting, and timestamp generation.
+
+    Args:
+        model_name (str|None): Model name for the slug (e.g., "Claude Sonnet 4.6").
+        volume (int|None): Session or question volume for the slug.
+        label (str|None): Custom label — overrides model_name in the slug.
+
+    Returns:
+        str: Absolute path to the created session directory.
+    """
+    if label:
+        slug = _sanitize_filename(label)
+    elif model_name:
+        slug = _sanitize_filename(model_name)
+    else:
+        slug = "report"
+
+    volume_slug = _format_volume(volume)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    hex_suffix = os.urandom(2).hex()
+
+    dir_name = f"{slug}_{volume_slug}_{timestamp}-{hex_suffix}"
+    base_dir = os.path.expanduser(resolve_setting("reports", "output_dir"))
+    session_dir = os.path.join(base_dir, dir_name)
+    os.makedirs(session_dir, exist_ok=True)
+    return os.path.abspath(session_dir)
+
+
+def _generate_typed_report_path(report_type, volume, output_dir=None):
+    """Generate flat file path for non-bedrock reports (fallback when no session dir).
+
+    Pattern: {report_type}_{volume_slug}_{timestamp}-{hex}.md
+    Does NOT use reports.naming_template config.
+    """
+    if output_dir is None:
+        output_dir = os.path.expanduser(resolve_setting("reports", "output_dir"))
+    volume_slug = _format_volume(volume)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    hex_suffix = os.urandom(2).hex()
+    filename = f"{report_type}_{volume_slug}_{timestamp}-{hex_suffix}.md"
+    return os.path.join(output_dir, filename)
+
+
+def _build_typed_front_matter(report_type, result, inputs_dict):
+    """Build YAML front-matter for non-bedrock reports.
+
+    Args:
+        report_type: "agentcore", "evaluations", or "business-value"
+        result: the full result dict from the function
+        inputs_dict: dict of key input parameters (for inputs_hash)
+
+    Returns empty string if reports.include_metadata config is False.
+    """
+    if not resolve_setting("reports", "include_metadata"):
+        return ""
+
+    inputs_str = json.dumps(inputs_dict, sort_keys=True, default=str)
+    inputs_hash = _hashlib.sha256(inputs_str.encode()).hexdigest()[:16]
+
+    total_monthly = result.get("total_monthly", 0)
+    total_annual = result.get("total_annual", total_monthly * 12)
+
+    lines = ["---"]
+    lines.append(f'generated_at: "{time.strftime("%Y-%m-%dT%H:%M:%S")}"')
+    lines.append(f'report_type: "{report_type}"')
+    lines.append(f"total_monthly: {round(total_monthly, 2)}")
+    lines.append(f"total_annual: {round(total_annual, 2)}")
+    lines.append(f'inputs_hash: "{inputs_hash}"')
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _identify_top_ac_component(result):
+    """Identify the largest AgentCore cost component. Returns string like 'runtime (65%)'."""
+    components = {
+        "runtime": result["runtime"]["total"],
+        "gateway": result["gateway"]["total"],
+        "memory": result["memory"]["total"],
+    }
+    if result["browser"]["included"]:
+        components["browser"] = result["browser"]["total"]
+    if result["code_interpreter"]["included"]:
+        components["code_interpreter"] = result["code_interpreter"]["total"]
+
+    total = result["total_monthly"]
+    if total <= 0:
+        return "none (zero cost)"
+    top_name = max(components, key=components.get)
+    top_pct = components[top_name] / total * 100
+    return f"{top_name} ({top_pct:.0f}%)"
+
+
+def _format_agentcore_report(result):
+    """Format AgentCore cost result as a markdown report string."""
+    lines = ["# AgentCore Infrastructure Cost Report", ""]
+
+    # Summary table
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Component | Monthly | Annual | % of Total |")
+    lines.append("|-----------|---------|--------|------------|")
+    total = result["total_monthly"]
+    def _pct(v):
+        return f"{v / total * 100:.0f}%" if total > 0 else "0%"
+
+    rt = result["runtime"]["total"]
+    gw = result["gateway"]["total"]
+    mem = result["memory"]["total"]
+    lines.append(f"| Runtime (vCPU + Memory) | ${rt:,.2f} | ${rt * 12:,.2f} | {_pct(rt)} |")
+    lines.append(f"| Gateway | ${gw:,.2f} | ${gw * 12:,.2f} | {_pct(gw)} |")
+    lines.append(f"| Memory (STM + LTM) | ${mem:,.2f} | ${mem * 12:,.2f} | {_pct(mem)} |")
+    if result["browser"]["included"]:
+        br = result["browser"]["total"]
+        lines.append(f"| BrowserTool | ${br:,.2f} | ${br * 12:,.2f} | {_pct(br)} |")
+    if result["code_interpreter"]["included"]:
+        ci = result["code_interpreter"]["total"]
+        lines.append(f"| CodeInterpreter | ${ci:,.2f} | ${ci * 12:,.2f} | {_pct(ci)} |")
+    lines.append(f"| **Total** | **${total:,.2f}** | **${total * 12:,.2f}** | **100%** |")
+    lines.append("")
+
+    # Assumptions
+    lines.append("## Assumptions")
+    lines.append("")
+    lines.append("| Parameter | Value |")
+    lines.append("|-----------|-------|")
+    for k, v in result.get("assumptions", {}).items():
+        lines.append(f"| {k} | {v} |")
+    lines.append("")
+
+    # Detailed Breakdown
+    lines.append("## Detailed Breakdown")
+    lines.append("")
+    explanation = result.get("explanation", {})
+    for section_name, section_data in explanation.items():
+        lines.append(f"### {section_name.replace('_', ' ').title()}")
+        lines.append("")
+        if isinstance(section_data, dict):
+            for k, v in section_data.items():
+                lines.append(f"- **{k}:** {v}")
+        else:
+            lines.append(str(section_data))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _format_evaluation_report(result):
+    """Format evaluation cost result as a markdown report string."""
+    lines = ["# AgentCore Evaluations Cost Report", ""]
+
+    # Summary
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Sampling rate | {result.get('sampling_rate', 0.10) * 100:.0f}% |")
+    lines.append(f"| Evaluated sessions/month | {result['evaluated_sessions']:,.0f} |")
+    lines.append(f"| Evaluated questions/month | {result['evaluated_questions']:,.0f} |")
+    lines.append(f"| Trace tokens/question | {result['trace_tokens_per_q']:,} |")
+    lines.append(f"| Total monthly | ${result['total_monthly']:,.2f} |")
+    lines.append(f"| Total annual | ${result['total_annual']:,.2f} |")
+    lines.append("")
+
+    # Cost Breakdown
+    lines.append("## Cost Breakdown")
+    lines.append("")
+    lines.append("| Component | Monthly | Annual |")
+    lines.append("|-----------|---------|--------|")
+    bi = result["builtin"]["total"]
+    cl = result["custom_llm"]["total"]
+    cc = result["custom_code"]["total"]
+    lines.append(f"| Built-in evaluators | ${bi:,.2f} | ${bi * 12:,.2f} |")
+    lines.append(f"| Custom LLM evaluators | ${cl:,.2f} | ${cl * 12:,.2f} |")
+    lines.append(f"| Custom code evaluators | ${cc:,.2f} | ${cc * 12:,.2f} |")
+    lines.append(f"| **Total** | **${result['total_monthly']:,.2f}** | **${result['total_annual']:,.2f}** |")
+    lines.append("")
+
+    # Warnings
+    if result.get("warnings"):
+        lines.append("## Warnings")
+        lines.append("")
+        for w in result["warnings"]:
+            lines.append(f"- ⚠️ {w}")
+        lines.append("")
+
+    # Detailed Breakdown
+    lines.append("## Detailed Breakdown")
+    lines.append("")
+    explanation = result.get("explanation", {})
+    for section_name, section_data in explanation.items():
+        lines.append(f"### {section_name.replace('_', ' ').title()}")
+        lines.append("")
+        if isinstance(section_data, dict):
+            for k, v in section_data.items():
+                lines.append(f"- **{k}:** {v}")
+        else:
+            lines.append(str(section_data))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _format_business_value_report(result):
+    """Format business value result as a markdown report string."""
+    lines = ["# Agent Business Value Report", ""]
+
+    # Summary
+    summary = result.get("summary", {})
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Grand Total (annual) | ${summary.get('grand_total', 0):,.2f} |")
+    lines.append(f"| Agent Cost (annual) | ${summary.get('agent_cost_annual', 0):,.2f} |")
+    lines.append(f"| Net Value (annual) | ${summary.get('net_value', 0):,.2f} |")
+    roi = summary.get("roi_pct", 0)
+    lines.append(f"| ROI | {'∞' if roi == float('inf') else f'{roi:,.0f}%'} |")
+    payback = summary.get("payback_days", 0)
+    lines.append(f"| Payback Period | {'N/A' if payback == float('inf') else f'{payback:.0f} days'} |")
+    lines.append("")
+
+    # Dimension 1: Time Savings
+    lines.append("## Dimension 1: Time Savings")
+    lines.append("")
+    lines.append("| Tier | Effectiveness | Efficiency | Annual Productivity Uplift | Annual Cost Savings |")
+    lines.append("|------|--------------|------------|---------------------------|---------------------|")
+    for tier_name in ["Conservative", "Moderate", "Optimistic"]:
+        prod = result.get("dim1_productivity", {}).get(tier_name, {})
+        cost = result.get("dim1_cost_savings", {}).get(tier_name, {})
+        eff = prod.get("effectiveness", 0)
+        effi = prod.get("efficiency", 0)
+        lines.append(f"| {tier_name} | {eff:.0%} | {effi:.0%} | ${prod.get('annual', 0):,.2f} | ${cost.get('annual', 0):,.2f} |")
+    lines.append("")
+
+    # Dimension 2
+    dim2 = result.get("dim2", {})
+    if dim2:
+        lines.append("## Dimension 2: Churn Reduction")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
+        lines.append(f"| Churn reduction | {dim2.get('churn_reduction_pp', 0):.1f} pp |")
+        lines.append(f"| Customers retained | {dim2.get('customers_retained', 0):,.0f} |")
+        lines.append(f"| Annual value | ${dim2.get('annual', 0):,.2f} |")
+        lines.append("")
+
+    # Dimension 3
+    dim3 = result.get("dim3", {})
+    if dim3:
+        lines.append("## Dimension 3: Sales Increase")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
+        lines.append(f"| Sales increase | {dim3.get('sales_increase_pct', 0):.1f}% |")
+        lines.append(f"| Annual value | ${dim3.get('annual', 0):,.2f} |")
+        lines.append("")
+
+    # Assumptions
+    lines.append("## Assumptions")
+    lines.append("")
+    lines.append("| Parameter | Value |")
+    lines.append("|-----------|-------|")
+    for k, v in result.get("assumptions", {}).items():
+        lines.append(f"| {k} | {v} |")
+    lines.append("")
+
+    # Detailed Breakdown
+    lines.append("## Detailed Breakdown")
+    lines.append("")
+    explanation = result.get("explanation", {})
+    for section_name, section_data in explanation.items():
+        lines.append(f"### {section_name.replace('_', ' ').title()}")
+        lines.append("")
+        if isinstance(section_data, dict):
+            for k, v in section_data.items():
+                lines.append(f"- **{k}:** {v}")
+        else:
+            lines.append(str(section_data))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _build_agentcore_summary(result, file_path):
+    """Build compact summary dict for AgentCore cost."""
+    return {
+        "file_path": file_path,
+        "total_monthly": round(result["total_monthly"], 2),
+        "total_annual": round(result["total_annual"], 2),
+        "runtime_monthly": round(result["runtime"]["total"], 2),
+        "gateway_monthly": round(result["gateway"]["total"], 2),
+        "memory_monthly": round(result["memory"]["total"], 2),
+        "browser_monthly": round(result["browser"]["total"], 2),
+        "code_interpreter_monthly": round(result["code_interpreter"]["total"], 2),
+        "sessions_per_month": result["assumptions"]["sessions_per_month"],
+        "questions_per_month": result["assumptions"]["questions_per_month"],
+        "top_cost_component": _identify_top_ac_component(result),
+    }
+
+
+def _build_evaluation_summary(result, file_path):
+    """Build compact summary dict for evaluation cost."""
+    return {
+        "file_path": file_path,
+        "total_monthly": round(result["total_monthly"], 2),
+        "total_annual": round(result["total_annual"], 2),
+        "evaluated_sessions": result["evaluated_sessions"],
+        "evaluated_questions": result["evaluated_questions"],
+        "sampling_rate": result["sampling_rate"],
+        "builtin_total": round(result["builtin"]["total"], 2),
+        "custom_total": round(result["custom_llm"]["total"] + result["custom_code"]["total"], 2),
+    }
+
+
+def _build_bva_summary(result, file_path):
+    """Build compact summary dict for business value."""
+    summary = result["summary"]
+    roi = summary["roi_pct"]
+    payback = summary["payback_days"]
+    return {
+        "file_path": file_path,
+        "grand_total_annual": round(summary["grand_total"], 2),
+        "net_value_annual": round(summary["net_value"], 2),
+        "roi_pct": "∞" if roi == float("inf") else round(roi, 1),
+        "payback_days": "N/A" if payback == float("inf") else round(payback, 0),
+        "dim1_moderate_annual": round(summary["dim1_moderate_productivity_annual"], 2),
+        "dim2_annual": round(summary["dim2_annual"], 2),
+        "dim3_annual": round(summary["dim3_annual"], 2),
+        "agent_cost_annual": round(summary["agent_cost_annual"], 2),
+        "sessions_per_month": result["assumptions"]["sessions_per_month"],
+    }
 
 
 def classify_provider(name: str) -> str:
@@ -2698,8 +3065,10 @@ def calculate_agent_session_compounded_cost(
     main_agent_config,
     # Sub-agent configurations (optional)
     subagents=None,
-    # Report output path (optional — overrides config)
+    # Report output path (optional — overrides config and output_dir)
     output_path=None,
+    # Report output directory (optional — writes bedrock-pricing.md within it)
+    output_dir=None,
 ):
     """Calculate total cost for an AI agent session including main agent and sub-agents.
 
@@ -3116,7 +3485,11 @@ def calculate_agent_session_compounded_cost(
     result["capacity_profile_table"] = _format_capacity_profile_table(capacity_profile)
 
     # ── Step 8: Write report to file and return compact summary ──
-    file_path = _write_report_to_file(result, main_agent_config, subagents, output_path)
+    # Precedence: output_path > output_dir > generated path
+    _effective_output_path = output_path
+    if _effective_output_path is None and output_dir is not None:
+        _effective_output_path = os.path.join(output_dir, _BEDROCK_REPORT_FILENAME)
+    file_path = _write_report_to_file(result, main_agent_config, subagents, _effective_output_path)
 
     if file_path is None:
         # File write failed — fall back to full inline result with warning
@@ -4124,6 +4497,8 @@ def calculate_evaluation_cost(
     # Judge output
     judge_output_tokens_per_eval=300,      # score + reasoning per evaluator
     questions_per_session=10,
+    # Report output directory (optional)
+    output_dir=None,
 ):
     """Calculate AgentCore Evaluations cost (LLM-as-a-Judge).
 
@@ -4233,10 +4608,11 @@ def calculate_evaluation_cost(
         "grand_total": f"${builtin_total:,.2f} + ${custom_llm_total:,.2f} + ${code_eval_total:,.2f} = ${total_monthly:,.2f}/mo",
     }
 
-    return {
+    result = {
         "evaluated_sessions": evaluated_sessions,
         "evaluated_questions": evaluated_questions,
         "trace_tokens_per_q": trace_tokens_per_q,
+        "sampling_rate": sampling_rate,
         "builtin": {
             "judge_calls": builtin_judge_calls,
             "input_cost": builtin_input_cost,
@@ -4259,6 +4635,42 @@ def calculate_evaluation_cost(
         "warnings": warnings,
         "explanation": explanation,
     }
+
+    # ── Write report to file and return compact summary ──
+    if output_dir is not None:
+        file_path = os.path.join(output_dir, _EVAL_REPORT_FILENAME)
+    else:
+        file_path = _generate_typed_report_path("eval", questions_per_month)
+
+    inputs_dict = {"questions_per_month": questions_per_month, "sessions_per_month": sessions_per_month,
+                   "sampling_rate": sampling_rate, "num_builtin_evaluators": num_builtin_evaluators}
+    content = _build_typed_front_matter("evaluations", result, inputs_dict) + _format_evaluation_report(result)
+    written_path = _try_write(file_path, content)
+
+    # Cascade: if session dir failed, try flat file fallback
+    if written_path is None and output_dir is not None:
+        print(
+            f"⚠️  Report: Could not write to session directory '{output_dir}', trying default location.",
+            file=sys.stderr
+        )
+        fallback_path = _generate_typed_report_path("eval", questions_per_month)
+        written_path = _try_write(fallback_path, content)
+
+    if written_path is None:
+        print(
+            "⚠️  Report: Failed to write evaluations report file. Returning full result inline.\n"
+            "    This increases token usage and latency. Specify a writable folder via\n"
+            "    reports.output_dir in ~/.bedrock_skills/config.yaml or pass output_dir='/writable/path/'.",
+            file=sys.stderr
+        )
+        result["_file_write_failed"] = True
+        return result
+
+    # Auto-cleanup if configured
+    if resolve_setting("reports", "auto_cleanup"):
+        _cleanup_old_reports()
+
+    return _build_evaluation_summary(result, written_path)
 
 
 def build_capacity_profile_from_tokens(token_result, sessions_per_month, model_name=None, sub_agents=None):
@@ -4782,6 +5194,8 @@ def calculate_agentcore_cost(
     ci_usage_pct=1.0,
     ci_vcpus=2,
     ci_memory_gb=4,
+    # Report output directory (optional)
+    output_dir=None,
 ):
     """Calculate AgentCore component costs (Runtime, Gateway, Memory, BrowserTool, CodeInterpreter).
 
@@ -4926,7 +5340,7 @@ def calculate_agentcore_cost(
         },
     }
 
-    return {
+    result = {
         "assumptions": {
             "questions_per_month": questions_per_month,
             "questions_per_session": questions_per_session,
@@ -4974,6 +5388,41 @@ def calculate_agentcore_cost(
         "explanation": explanation,
     }
 
+    # ── Write report to file and return compact summary ──
+    if output_dir is not None:
+        file_path = os.path.join(output_dir, _AGENTCORE_REPORT_FILENAME)
+    else:
+        file_path = _generate_typed_report_path("agentcore", questions_per_month)
+
+    inputs_dict = result["assumptions"]
+    content = _build_typed_front_matter("agentcore", result, inputs_dict) + _format_agentcore_report(result)
+    written_path = _try_write(file_path, content)
+
+    # Cascade: if session dir failed, try flat file fallback
+    if written_path is None and output_dir is not None:
+        print(
+            f"⚠️  Report: Could not write to session directory '{output_dir}', trying default location.",
+            file=sys.stderr
+        )
+        fallback_path = _generate_typed_report_path("agentcore", questions_per_month)
+        written_path = _try_write(fallback_path, content)
+
+    if written_path is None:
+        print(
+            "⚠️  Report: Failed to write AgentCore report file. Returning full result inline.\n"
+            "    This increases token usage and latency. Specify a writable folder via\n"
+            "    reports.output_dir in ~/.bedrock_skills/config.yaml or pass output_dir='/writable/path/'.",
+            file=sys.stderr
+        )
+        result["_file_write_failed"] = True
+        return result
+
+    # Auto-cleanup if configured
+    if resolve_setting("reports", "auto_cleanup"):
+        _cleanup_old_reports()
+
+    return _build_agentcore_summary(result, written_path)
+
 
 def calculate_business_value(
     sessions_per_month,
@@ -4993,6 +5442,8 @@ def calculate_business_value(
     sales_increase_pct=None,
     # Optional: override default business value tiers
     value_tiers=None,
+    # Report output directory (optional)
+    output_dir=None,
 ):
     """Calculate business value of an AI agent across up to three dimensions.
 
@@ -5149,7 +5600,7 @@ def calculate_business_value(
         "payback": f"{payback_days:.0f} days" if payback_days != float("inf") else "N/A",
     }
 
-    return {
+    result = {
         "assumptions": {
             "sessions_per_month": sessions_per_month,
             "time_without_ai_min": time_without_ai_min,
@@ -5176,6 +5627,45 @@ def calculate_business_value(
         },
         "explanation": explanation,
     }
+
+    # ── Write report to file and return compact summary ──
+    # For BVA, total_monthly is not directly in result — add it for front-matter
+    result["total_monthly"] = grand_total / 12 if grand_total else 0
+    result["total_annual"] = grand_total
+
+    if output_dir is not None:
+        file_path = os.path.join(output_dir, _BVA_REPORT_FILENAME)
+    else:
+        file_path = _generate_typed_report_path("bva", sessions_per_month)
+
+    inputs_dict = result["assumptions"]
+    content = _build_typed_front_matter("business-value", result, inputs_dict) + _format_business_value_report(result)
+    written_path = _try_write(file_path, content)
+
+    # Cascade: if session dir failed, try flat file fallback
+    if written_path is None and output_dir is not None:
+        print(
+            f"⚠️  Report: Could not write to session directory '{output_dir}', trying default location.",
+            file=sys.stderr
+        )
+        fallback_path = _generate_typed_report_path("bva", sessions_per_month)
+        written_path = _try_write(fallback_path, content)
+
+    if written_path is None:
+        print(
+            "⚠️  Report: Failed to write business value report file. Returning full result inline.\n"
+            "    This increases token usage and latency. Specify a writable folder via\n"
+            "    reports.output_dir in ~/.bedrock_skills/config.yaml or pass output_dir='/writable/path/'.",
+            file=sys.stderr
+        )
+        result["_file_write_failed"] = True
+        return result
+
+    # Auto-cleanup if configured
+    if resolve_setting("reports", "auto_cleanup"):
+        _cleanup_old_reports()
+
+    return _build_bva_summary(result, written_path)
 
 
 if __name__ == "__main__":

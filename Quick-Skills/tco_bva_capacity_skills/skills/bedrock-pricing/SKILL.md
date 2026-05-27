@@ -337,6 +337,21 @@ cap_result = check_capacity_fit(
   3. Present **combined total** (model + infrastructure) — never model-only for agentic workloads
   4. Load `bedrock-capacity` skill and present the capacity fit check using the `capacity_profile` from the cost result — do NOT recompute tokens
 
+### 9. Completeness Check (MANDATORY — DO NOT SKIP)
+
+Before presenting final results to the user, verify ALL applicable items below. Do NOT present results until every applicable check passes.
+
+| # | Check | Condition | Action if not done |
+|---|-------|-----------|-------------------|
+| 1 | **AgentCore costs included** | Workload mentions "agent", "multi-agent", "sub-agent", "orchestrator", or "agentic" | Load `agentcore-pricing`, run `calculate_agentcore_cost()`, present combined total |
+| 2 | **Capacity fit for EVERY model** | User asked about capacity, limits, RPM, TPM, or "will it fit" | Run `check_capacity_fit()` for each distinct model in the workload (main + all sub-agents) |
+| 3 | **Reports in session directory** | Any calculation was performed | Use `create_report_session()` and pass `output_dir` to all calculation functions |
+| 4 | **Reports at ~/bedrock_reports/** | Any report was written | Never write to custom paths — always use the default report directory or session directory |
+| 5 | **All use cases covered** | User provided multiple use cases or scenarios | Each use case gets its own session directory with complete reports |
+| 6 | **Sub-agent models have capacity checks** | Multi-agent workload with sub-agents on different models | Get `tier_limits` for each sub-agent model and run `check_capacity_fit()` separately |
+
+**If any applicable check fails, go back and complete it before responding.**
+
 ## Configuration
 
 Parameter defaults are managed by the YAML configuration system in `bedrock_pricing.py`.
@@ -410,6 +425,35 @@ See the config template for the full list of overridable settings in the `agent_
 
 The function always writes a full detailed report to a markdown file and returns a compact summary dict. This keeps token usage low while preserving full detail for the user.
 
+### Session Directory Workflow
+
+When running multiple calculations for the same user question (bedrock pricing + agentcore + BVA), group all reports in a session directory:
+
+```python
+# Create session directory once per user question
+session_dir = create_report_session(model_name="Claude Sonnet 4.6", volume=10000)
+
+# All calculations write to the same session dir
+result = calculate_agent_session_compounded_cost(
+    main_agent_config={...},
+    output_dir=session_dir,
+)
+# result["file_path"] → ".../claude-sonnet-4.6_10k-sessions_20260526-143022-a1b2/bedrock-pricing.md"
+
+ac_result = calculate_agentcore_cost(..., output_dir=session_dir)
+bva_result = calculate_business_value(..., output_dir=session_dir)
+```
+
+The session directory groups all related reports:
+```
+~/bedrock_reports/claude-sonnet-4.6_10k-sessions_20260526-143022-a1b2/
+├── bedrock-pricing.md
+├── agentcore.md
+└── business-value.md
+```
+
+`create_report_session()` enforces the naming convention — the agent passes raw inputs (model name, volume, optional label) and the function handles sanitization and formatting.
+
 ### How it works
 
 1. `calculate_agent_session_compounded_cost()` computes full detail internally
@@ -420,28 +464,28 @@ The function always writes a full detailed report to a markdown file and returns
 
 Reports are written to `~/bedrock_reports/` by default. Configure via:
 - `reports.output_dir` in `~/.bedrock_skills/config.yaml` — change default directory
-- `output_path` parameter — write to a specific file path
+- `output_dir` parameter — write to a session directory (recommended)
+- `output_path` parameter — write to a specific file path (overrides output_dir)
 
-Filenames follow the pattern: `{model}_{volume}_{timestamp}-{hex}.md`
-Example: `claude-sonnet-4.6_10k-sessions_20260526-143022-a1b2.md`
+Precedence: `output_path` > `output_dir` > generated flat file path.
 
 ### Cleanup
 
-Old reports are automatically cleaned up based on `reports.max_age_days` (default: 30 days) when `reports.auto_cleanup` is True.
+Old reports and session directories are automatically cleaned up based on `reports.retention_days` (default: 30 days) when `reports.auto_cleanup` is True. Session directories are deleted based on directory mtime.
 
 Manual cleanup:
 ```bash
 python3 bedrock_pricing.py --cleanup-reports
 ```
 
-This deletes reports older than the configured threshold. Only files matching the report naming pattern are deleted — not arbitrary `.md` files.
+This deletes reports and session directories older than the configured threshold. Files in session directories are subject to deletion along with the directory.
 
 ### Failure behavior
 
-If the report cannot be written to any path (configured dir → default dir → all fail):
+If the report cannot be written to any path (session dir → default dir → all fail):
 - The function returns the full result dict inline with `_file_write_failed: True`
 - A warning is printed to stderr explaining the failure
-- The user should configure a writable path via `reports.output_dir` or pass `output_path`
+- The user should configure a writable path via `reports.output_dir` or pass `output_dir`
 
 ## Output Structure
 

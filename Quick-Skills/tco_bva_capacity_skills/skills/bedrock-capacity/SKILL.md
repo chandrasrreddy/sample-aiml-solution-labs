@@ -184,6 +184,20 @@ Example format (per model):
 - If workload does NOT fit: walk through the 3-Step Optimization Framework below
 - After optimization adjustments: recompute the token profile and re-run `check_capacity_fit()` to verify
 
+### 7. Completeness Check (MANDATORY — DO NOT SKIP)
+
+Before presenting final results to the user, verify ALL applicable items below. Do NOT present results until every applicable check passes.
+
+| # | Check | Condition | Action if not done |
+|---|-------|-----------|-------------------|
+| 1 | **Every model checked** | Multi-agent workload with sub-agents on different models | Run `check_capacity_fit()` for each distinct model (main agent + all sub-agents) |
+| 2 | **Real limits used** | Any capacity check was performed | Limits came from `get_tier_limits_for_model()` — never assumed or hardcoded |
+| 3 | **Correct burndown rate** | Claude 3.7+ model in workload | `output_burndown_rate=5` for Claude 3.7 and all later Claude models; 1 for all others |
+| 4 | **All use cases covered** | User provided multiple use cases or scenarios | Each use case gets a separate capacity check with its own fit verdict |
+| 5 | **Sub-agent quota impact** | Sub-agents share a model with the main agent | Use `aggregate_capacity_by_model()` to sum load against shared quotas |
+
+**If any applicable check fails, go back and complete it before responding.**
+
 ## Key Concepts
 
 | Term | Definition |

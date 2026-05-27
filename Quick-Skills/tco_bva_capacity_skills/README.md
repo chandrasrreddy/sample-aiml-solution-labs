@@ -202,7 +202,7 @@ If the skill activates and returns pricing, you're all set.
 │  │  • query_model_pricing()                      │ │
 │  │  • query_agentcore_pricing()                  │ │
 │  │  • extract_bedrock_model_prices()             │ │
-│  │  • calculate_agent_cost_with_incremental_...  │ │
+│  │  • calculate_agent_session_compounded_cost()   │ │
 │  │  • calculate_agentcore_cost()                 │ │
 │  │  • calculate_business_value()                 │ │
 │  │  • calculate_evaluation_cost()                │ │
@@ -227,6 +227,51 @@ If the skill activates and returns pricing, you're all set.
             │  AWS Service Quotas│
             └────────────────────┘
 ```
+
+---
+
+## Report Output
+
+When you run a pricing, capacity, or business value calculation, the skills write detailed reports to markdown files on disk. This keeps the in-conversation response compact while preserving full detail for review, sharing, or auditing.
+
+### Where reports are saved
+
+Reports are written to `~/bedrock_reports/` by default. When multiple calculations are run for the same question (e.g., model pricing + AgentCore + business value), they are grouped in a **session directory**:
+
+```
+~/bedrock_reports/
+└── claude-sonnet-4.6_10k-sessions_20260527-133154-0e72/
+    ├── bedrock-pricing.md      # Full token breakdown, caching strategy, capacity summary
+    ├── agentcore.md            # Runtime/Gateway/Memory cost breakdown
+    └── business-value.md       # ROI, payback, tiered value analysis
+```
+
+### What's in the reports
+
+Each report contains:
+- **YAML front-matter** — metadata (timestamp, totals, inputs hash) for programmatic parsing
+- **Summary tables** — key metrics at a glance
+- **Assumptions** — all parameters used in the calculation
+- **Detailed breakdown** — step-by-step formulas and intermediate values
+
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `reports.output_dir` | `~/bedrock_reports` | Where reports are written |
+| `reports.retention_days` | 30 | Auto-cleanup threshold |
+| `reports.auto_cleanup` | false | Delete old reports automatically |
+| `reports.include_metadata` | true | Include YAML front-matter |
+
+Configure via `~/.bedrock_skills/config.yaml` (user-level) or `./.bedrock_skills.yaml` (project-level). Run `python3 bedrock_pricing.py --init-config` to generate a template.
+
+### Manual cleanup
+
+```bash
+python3 bedrock_pricing.py --cleanup-reports
+```
+
+Deletes reports and session directories older than the configured retention period.
 
 ---
 
