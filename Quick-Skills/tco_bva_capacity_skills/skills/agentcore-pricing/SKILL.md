@@ -134,7 +134,7 @@ eval_result = calculate_evaluation_cost(
 
 ### 6. For Combined Estimates (Model + Infrastructure)
 
-- Load `bedrock-pricing` to get model inference costs via `calculate_agent_cost_with_incremental_caching()`
+- Load `bedrock-pricing` to get model inference costs via `calculate_agent_session_compounded_cost()`
 - Sum model cost + AgentCore cost for the grand total
 - Present per-component breakdown showing where spend goes
 

@@ -1,24 +1,80 @@
 #!/usr/bin/env python3
 """
-bedrock_pricing.py — Query AWS Pricing API for Bedrock model and AgentCore pricing.
+bedrock_pricing.py — Bedrock cost estimation, capacity planning, and business value analysis.
 
-Bundled with the 'bedrock-pricing' Amazon Quick skill.
+Shared engine for 4 skills: bedrock-pricing, agentcore-pricing, bedrock-capacity, agent-business-value.
+Works with Quick Desktop, Kiro, and Claude Code.
 
-This script has TWO modes:
-  1. REFRESH MODE (run from Terminal): Fetches fresh pricing data from the AWS Pricing API
-     and saves it to ~/bedrock_cache/.
-     Requires: boto3, valid AWS credentials.
-     
-     Usage:
-       python3 bedrock_pricing.py --refresh
+CLI usage:
+  python3 bedrock_pricing.py --refresh                    # Fetch pricing + quotas from AWS
+  python3 bedrock_pricing.py --region us-west-2 --model "Claude Sonnet 4"  # Query prices
+  python3 bedrock_pricing.py --init-config                # Generate config template
+  python3 bedrock_pricing.py --cleanup-reports            # Remove old reports
 
-  2. QUERY MODE (called by the skill inside the sandbox): Reads cached JSON files,
-     applies filters, and outputs Markdown.
-     
-     Usage:
-       python3 bedrock_pricing.py --cache-dir ~ [--region REGION] [--provider PROVIDER] [--model MODEL] [--include-agentcore]
+═══════════════════════════════════════════════════════════════════════════════
+API QUICK REFERENCE — 11 Common Patterns
+═══════════════════════════════════════════════════════════════════════════════
 
-Output: Markdown to stdout with structured pricing data.
+All patterns assume: cache_dir = "~/bedrock_cache", region is always required.
+
+Pattern 1 — Single model cost:
+    results = query_model_pricing(cache_dir, "us-west-2", model_filter="Claude Sonnet 4")
+    prices = extract_bedrock_model_prices(results)
+    cost = calculate_agent_session_compounded_cost(
+        main_agent_config={"input_price": prices["input"], "output_price": prices["output"],
+            "cache_read_price": prices["cache_read"], "cache_write_price": prices["cache_write"],
+            "agent_sessions_per_month": 10000})
+
+Pattern 2 — Compare models (repeat pattern 1 per model, same workload config):
+    for model in ["Claude Sonnet 4", "Claude Haiku 4.5", "Nova 2.0 Lite"]:
+        results = query_model_pricing(cache_dir, "us-west-2", model_filter=model)
+        prices = extract_bedrock_model_prices(results)
+        cost = calculate_agent_session_compounded_cost(main_agent_config={...prices, ...config})
+
+Pattern 3 — Compare tiers (Standard vs Batch vs Priority):
+    results = query_model_pricing(cache_dir, "us-west-2", model_filter="Claude Sonnet 4")
+    all_prices = extract_bedrock_model_prices(results, all_tiers=True)
+    # all_prices = {"Standard Global": {...}, "Batch Global": {...}, "Priority Global": {...}}
+
+Pattern 4 — Compare regions:
+    for region in ["us-west-2", "eu-west-1", "ap-northeast-1"]:
+        results = query_model_pricing(cache_dir, region, model_filter="Claude Sonnet 4")
+        prices = extract_bedrock_model_prices(results)
+
+Pattern 5 — Token-only (no prices needed):
+    tokens = calculate_compounded_tokens_for_agent(questions_per_agent_session=5, tools_invoked=3)
+    rag_tokens = calculate_rag_subagent_tokens(rag_n_chunks=10, output_tokens=300)
+    research_tokens = calculate_research_subagent_tokens(n_research_iterations=4)
+
+Pattern 6 — Cost → Capacity fit:
+    cost = calculate_agent_session_compounded_cost(main_agent_config={...})
+    # cost["capacity_profile"]["main_agent"] is the per-model flat profile
+    fit = check_capacity_fit(cost["capacity_profile"]["main_agent"], questions_per_month=1000000)
+
+Pattern 7 — Cost → Business value:
+    cost = calculate_agent_session_compounded_cost(main_agent_config={...})
+    bva = calculate_business_value(sessions_per_month=10000, agent_cost_monthly=cost["monthly_total"])
+
+Pattern 8 — AgentCore infrastructure costs:
+    ac_prices = query_agentcore_pricing(cache_dir, "us-west-2")
+    ac_cost = calculate_agentcore_cost(runtime_vcpu_price_hr=..., ...)
+
+Pattern 9 — What-if / sensitivity (call twice, change one param):
+    cost_a = calculate_agent_session_compounded_cost({...system_prompt_tokens: 2000...})
+    cost_b = calculate_agent_session_compounded_cost({...system_prompt_tokens: 5000...})
+
+Pattern 10 — Blended cost (model routing):
+    cost_complex = calculate_agent_session_compounded_cost({...sonnet prices...})
+    cost_simple = calculate_agent_session_compounded_cost({...haiku prices...})
+    blended = cost_complex["session_total"] * 0.15 + cost_simple["session_total"] * 0.85
+
+Pattern 11 — Full stack (Bedrock + AgentCore + Capacity + Business Value):
+    cost = calculate_agent_session_compounded_cost(main_agent_config={...})
+    ac_cost = calculate_agentcore_cost(...)
+    fit = check_capacity_fit(cost["capacity_profile"], questions_per_month)
+    bva = calculate_business_value(sessions_per_month, agent_cost_monthly=cost["monthly_total"] + ac_cost["total_monthly"])
+
+═══════════════════════════════════════════════════════════════════════════════
 """
 
 import json
@@ -99,7 +155,7 @@ except ImportError:
     _YAML_AVAILABLE = False
 
 # Single source of truth for all config sections, keys, types, defaults, and validation rules.
-# Used by: load_config(), _validate_config(), resolve_setting(), generate_config_template()
+# Used by: _load_config(), _validate_config(), _resolve_setting(), generate_config_template()
 CONFIG_SCHEMA = {
     "reports": {
         "_description": "Configure report output preferences (used by file-based report output feature)",
@@ -216,7 +272,7 @@ def _ensure_config_loaded():
     """Load config on first access (lazy initialization)."""
     global _LOADED_CONFIG
     if _LOADED_CONFIG is None:
-        _LOADED_CONFIG = load_config()
+        _LOADED_CONFIG = _load_config()
 
 
 def _deep_merge(base, override):
@@ -389,7 +445,7 @@ def _validate_config(config, source_path):
     return validated, warnings
 
 
-def load_config(user_path=None, project_path=None):
+def _load_config(user_path=None, project_path=None):
     """Load and merge YAML configuration files.
 
     Discovers user-level and project-level config files, validates both,
@@ -435,7 +491,7 @@ def load_config(user_path=None, project_path=None):
     return merged
 
 
-def get_config(section=None, key=None):
+def _get_config(section=None, key=None):
     """Access the loaded configuration.
 
     Args:
@@ -460,7 +516,7 @@ def get_config(section=None, key=None):
     return section_data.get(key)
 
 
-def resolve_setting(section, key, explicit_value=None, env_var=None):
+def _resolve_setting(section, key, explicit_value=None, env_var=None):
     """Resolve a setting through the full precedence chain.
 
     Precedence: explicit_value > environment variable > config file > schema default
@@ -674,10 +730,10 @@ def _generate_report_path(model_name, sessions_per_month, output_dir=None, outpu
         return os.path.abspath(os.path.expanduser(output_path))
 
     if output_dir is None:
-        output_dir = resolve_setting("reports", "output_dir")
+        output_dir = _resolve_setting("reports", "output_dir")
     output_dir = os.path.expanduser(output_dir)
 
-    template = resolve_setting("reports", "naming_template")
+    template = _resolve_setting("reports", "naming_template")
     random_hex = os.urandom(2).hex()  # 4-char hex to prevent same-second collisions
     timestamp = time.strftime("%Y%m%d-%H%M%S") + f"-{random_hex}"
     model_slug = _sanitize_filename(model_name or "")
@@ -695,7 +751,7 @@ def _build_front_matter(result, main_agent_config):
 
     Returns empty string if reports.include_metadata config is False.
     """
-    if not resolve_setting("reports", "include_metadata"):
+    if not _resolve_setting("reports", "include_metadata"):
         return ""
 
     inputs_str = json.dumps(main_agent_config, sort_keys=True, default=str)
@@ -778,7 +834,7 @@ def _write_report_to_file(result, main_agent_config, subagents=None, output_path
         written_path = _try_write(default_path, content)
 
     # Auto-cleanup if configured and write succeeded
-    if written_path and resolve_setting("reports", "auto_cleanup"):
+    if written_path and _resolve_setting("reports", "auto_cleanup"):
         _cleanup_old_reports()
 
     return written_path
@@ -862,15 +918,15 @@ def _cleanup_old_reports(output_dir=None, max_age_days=None):
         dict: {"deleted_count": int, "freed_bytes": int}
     """
     if output_dir is None:
-        output_dir = os.path.expanduser(resolve_setting("reports", "output_dir"))
+        output_dir = os.path.expanduser(_resolve_setting("reports", "output_dir"))
     if max_age_days is None:
-        max_age_days = resolve_setting("reports", "retention_days")
+        max_age_days = _resolve_setting("reports", "retention_days")
 
     if not os.path.isdir(output_dir):
         return {"deleted_count": 0, "freed_bytes": 0}
 
     # Derive filename pattern from template (for flat bedrock pricing files)
-    template = resolve_setting("reports", "naming_template")
+    template = _resolve_setting("reports", "naming_template")
     pattern = _re.escape(template)
     pattern = pattern.replace(_re.escape("{model}"), r"[a-z0-9.\-]+")
     pattern = pattern.replace(_re.escape("{volume}"), r"[a-z0-9\-]+")
@@ -932,7 +988,19 @@ import shutil as _shutil
 
 
 def create_report_session(model_name=None, volume=None, label=None):
-    """Create a session directory for grouping related reports. Returns absolute path.
+    """Create a timestamped session directory for grouping related report files.
+
+    Args (optional):
+        model_name (str|None): Model name for the directory slug. Default None.
+        volume (int|None): Volume number for the directory slug. Default None.
+        label (str|None): Custom label — overrides model_name. Default None.
+
+    Example:
+        create_report_session(model_name="Claude Sonnet 4.6", volume=10000)
+
+    Returns: absolute path (str) to the created session directory.
+
+    --- Detailed Documentation ---
 
     The naming convention is enforced by this function — callers pass raw inputs
     and the function handles sanitization, formatting, and timestamp generation.
@@ -957,7 +1025,7 @@ def create_report_session(model_name=None, volume=None, label=None):
     hex_suffix = os.urandom(2).hex()
 
     dir_name = f"{slug}_{volume_slug}_{timestamp}-{hex_suffix}"
-    base_dir = os.path.expanduser(resolve_setting("reports", "output_dir"))
+    base_dir = os.path.expanduser(_resolve_setting("reports", "output_dir"))
     session_dir = os.path.join(base_dir, dir_name)
     os.makedirs(session_dir, exist_ok=True)
     return os.path.abspath(session_dir)
@@ -970,7 +1038,7 @@ def _generate_typed_report_path(report_type, volume, output_dir=None):
     Does NOT use reports.naming_template config.
     """
     if output_dir is None:
-        output_dir = os.path.expanduser(resolve_setting("reports", "output_dir"))
+        output_dir = os.path.expanduser(_resolve_setting("reports", "output_dir"))
     volume_slug = _format_volume(volume)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     hex_suffix = os.urandom(2).hex()
@@ -988,7 +1056,7 @@ def _build_typed_front_matter(report_type, result, inputs_dict):
 
     Returns empty string if reports.include_metadata config is False.
     """
-    if not resolve_setting("reports", "include_metadata"):
+    if not _resolve_setting("reports", "include_metadata"):
         return ""
 
     inputs_str = json.dumps(inputs_dict, sort_keys=True, default=str)
@@ -1269,7 +1337,7 @@ def _build_bva_summary(result, file_path):
     }
 
 
-def classify_provider(name: str) -> str:
+def _classify_provider(name: str) -> str:
     for keywords, provider in PROVIDER_RULES:
         for kw in keywords:
             if kw.lower() in name.lower():
@@ -1277,7 +1345,7 @@ def classify_provider(name: str) -> str:
     return "Other"
 
 
-def fuzzy_match(query: str, text: str) -> bool:
+def _fuzzy_match(query: str, text: str) -> bool:
     q = query.lower().strip()
     t = text.lower()
     if q in t:
@@ -1292,7 +1360,7 @@ def fuzzy_match(query: str, text: str) -> bool:
     return False
 
 
-def parse_price_dimensions(terms: dict) -> list:
+def _parse_price_dimensions(terms: dict) -> list:
     dimensions = []
     for term_type in ["OnDemand", "Reserved"]:
         term_data = terms.get(term_type, {})
@@ -1312,7 +1380,7 @@ def parse_price_dimensions(terms: dict) -> list:
     return dimensions
 
 
-def get_model_name(attrs: dict) -> str:
+def _get_model_name(attrs: dict) -> str:
     name = attrs.get("model", "")
     if not name:
         name = attrs.get("servicename", attrs.get("group", "Unknown"))
@@ -1322,7 +1390,7 @@ def get_model_name(attrs: dict) -> str:
     return name
 
 
-def detect_tier(attrs: dict) -> str:
+def _detect_tier(attrs: dict) -> str:
     usage_type = attrs.get("usagetype", "").lower()
     inference_type = attrs.get("inferenceType", "").lower()
     feature = attrs.get("feature", "").lower()
@@ -1341,7 +1409,7 @@ def detect_tier(attrs: dict) -> str:
     return "Standard"
 
 
-def detect_variant(attrs: dict) -> str:
+def _detect_variant(attrs: dict) -> str:
     usage_type = attrs.get("usagetype", "").lower()
     if "cross-region-global" in usage_type:
         return "Cross-Region (Global)"
@@ -1351,7 +1419,19 @@ def detect_variant(attrs: dict) -> str:
 
 
 def check_pricing_data_status(cache_dir=None):
-    """Lightweight pricing data freshness check — uses only stat calls, no file reads.
+    """Check whether local pricing cache files are present and fresh.
+
+    Args (optional):
+        cache_dir (str): Directory to check. Default ~/bedrock_cache.
+
+    Example:
+        check_pricing_data_status()
+
+    Returns: dict with keys status ("ok"|"stale"|"missing"), found, missing, stale, refresh_command.
+
+    --- Detailed Documentation ---
+
+    Lightweight pricing data freshness check — uses only stat calls, no file reads.
 
     Call once at the start of a session to verify cache files are present and fresh.
 
@@ -1367,7 +1447,7 @@ def check_pricing_data_status(cache_dir=None):
             - refresh_command: str — command to run to fix issues
     """
     if cache_dir is None:
-        cache_dir = os.path.expanduser(resolve_setting("pricing_cache", "dir"))
+        cache_dir = os.path.expanduser(_resolve_setting("pricing_cache", "dir"))
 
     all_files = {
         "pricing": list(CACHE_FILES.values()),
@@ -1379,7 +1459,7 @@ def check_pricing_data_status(cache_dir=None):
     missing = []
     stale = []
 
-    max_age_days = resolve_setting("pricing_cache", "max_age_days")
+    max_age_days = _resolve_setting("pricing_cache", "max_age_days")
 
     for filename in flat_files:
         filepath = os.path.join(cache_dir, filename)
@@ -1416,7 +1496,7 @@ def check_pricing_data_status(cache_dir=None):
     }
 
 
-def load_cache_file(cache_dir: str, service_code: str) -> list:
+def _load_cache_file(cache_dir: str, service_code: str) -> list:
     """Load a pricing cache JSON file. Warns if file is older than 7 days."""
     filename = CACHE_FILES.get(service_code, "")
     if not filename:
@@ -1444,27 +1524,47 @@ def load_cache_file(cache_dir: str, service_code: str) -> list:
     return []
 
 
-def query_model_pricing(cache_dir, region_filter=None, provider_filter=None, model_filter=None):
+def query_model_pricing(cache_dir, region_filter, provider_filter=None, model_filter=None):
+    """Query cached pricing data for Bedrock models. Returns raw product entries.
+
+    Warning: output can be very large. Use extract_bedrock_model_prices()
+    on the result to collapse to a single {input, output, cache_read, cache_write} dict.
+
+    Args (required):
+        cache_dir (str): Path to cache directory (e.g., "~/bedrock_cache").
+        region_filter (str): AWS region code (e.g., "us-west-2").
+    Args (optional filters):
+        provider_filter (str): Provider name (fuzzy match).
+        model_filter (str): Model name (fuzzy match, e.g., "Claude Sonnet 4").
+
+    Example:
+        results = query_model_pricing("~/bedrock_cache", region_filter="us-west-2",
+                                      model_filter="Claude Sonnet 4")
+        prices = extract_bedrock_model_prices(results, tier="Standard", variant="Global")
+        # prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, ...}
+
+    Returns: list of raw product dicts (pass to extract_bedrock_model_prices).
+    """
     results = []
     for sc in MODEL_SERVICE_CODES:
-        products = load_cache_file(cache_dir, sc)
+        products = _load_cache_file(cache_dir, sc)
         for prod in products:
             attrs = prod.get("product", {}).get("attributes", {})
             region_code = attrs.get("regionCode", "")
-            if region_filter and region_code != region_filter:
+            if region_code != region_filter:
                 continue
-            model_name = get_model_name(attrs)
+            model_name = _get_model_name(attrs)
             provider = attrs.get("provider", "")
-            provider = classify_provider(provider if provider else model_name)
-            if provider_filter and not fuzzy_match(provider_filter, provider):
+            provider = _classify_provider(provider if provider else model_name)
+            if provider_filter and not _fuzzy_match(provider_filter, provider):
                 continue
-            if model_filter and not fuzzy_match(model_filter, model_name):
+            if model_filter and not _fuzzy_match(model_filter, model_name):
                 continue
-            dimensions = parse_price_dimensions(prod.get("terms", {}))
+            dimensions = _parse_price_dimensions(prod.get("terms", {}))
             if not dimensions:
                 continue
-            tier = detect_tier(attrs)
-            variant = detect_variant(attrs)
+            tier = _detect_tier(attrs)
+            variant = _detect_variant(attrs)
             results.append({
                 "provider": provider,
                 "model": model_name,
@@ -1477,7 +1577,24 @@ def query_model_pricing(cache_dir, region_filter=None, provider_filter=None, mod
 
 
 def extract_bedrock_model_prices(results, tier="Standard", variant="Global", all_tiers=False, include_multimodal=False):
-    """Extract standardized per-1M-token prices from query_model_pricing() results.
+    """Collapse query_model_pricing() results into a flat price dict ($/M tokens).
+
+    Args (required):
+        results (list): Output from query_model_pricing().
+    Args (optional):
+        tier (str): "Standard", "Batch", "Priority", "Flex". Default "Standard".
+        variant (str): "Global" or "Regional". Default "Global".
+        all_tiers (bool): Return all tier/variant combos. Default False.
+
+    Example:
+        results = query_model_pricing(cache_dir, region_filter="us-west-2", model_filter="Claude Sonnet 4")
+        prices = extract_bedrock_model_prices(results)
+        # {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
+
+    Returns: dict keyed by "Tier Variant" → {input, output, cache_read, cache_write}
+        (single dict if all_tiers=False, nested dict if all_tiers=True).
+
+    --- Detailed Documentation ---
 
     Handles differences in pricing format across model families:
     - Most models: prices stored per 1M tokens with "Million Input Tokens" descriptions.
@@ -1628,17 +1745,28 @@ def extract_bedrock_model_prices(results, tier="Standard", variant="Global", all
 
 
 
-def query_agentcore_pricing(cache_dir, region_filter=None):
+def query_agentcore_pricing(cache_dir, region_filter):
+    """Query AgentCore pricing from the local cache and return structured price entries.
+
+    Args (required):
+        cache_dir (str): Path to cache directory containing AgentCore pricing JSON.
+        region_filter (str): AWS region code (e.g., "us-east-1").
+
+    Example:
+        query_agentcore_pricing("~/bedrock_cache", "us-east-1")
+
+    Returns: list of dicts with keys component, sub_component, region, dimensions.
+    """
     results = []
-    products = load_cache_file(cache_dir, AGENTCORE_SERVICE_CODE)
+    products = _load_cache_file(cache_dir, AGENTCORE_SERVICE_CODE)
     for prod in products:
         attrs = prod.get("product", {}).get("attributes", {})
         region_code = attrs.get("regionCode", "")
-        if region_filter and region_code != region_filter:
+        if region_code != region_filter:
             continue
         service_name = attrs.get("servicename", attrs.get("group", "AgentCore"))
         component = attrs.get("group", attrs.get("usagetype", "Unknown"))
-        dimensions = parse_price_dimensions(prod.get("terms", {}))
+        dimensions = _parse_price_dimensions(prod.get("terms", {}))
         if not dimensions:
             continue
         results.append({
@@ -1650,268 +1778,292 @@ def query_agentcore_pricing(cache_dir, region_filter=None):
     return results
 
 
-def calculate_agent_cost_with_incremental_caching(
-    input_price,
-    output_price,
-    cache_read_price,
-    cache_write_price,
-    sessions_per_month,
-    questions_per_session=5,
-    input_tokens=100,
-    output_tokens=100,
-    system_prompt_tokens=1000,
-    tools_passed_to_agent=10,
-    tool_spec_tokens=100,
-    rag_chunks=10,
-    rag_tokens_per_chunk=300,
-    tools_invoked=5,
-    tool_call_tokens=100,
-    tool_result_tokens=100,
-):
-    """Calculate agent monthly cost using incremental prefix caching.
-
-    Uses incremental caching: each LLM turn's prompt extends the prior turn's.
-    The unchanged prefix is a cache read; only the new delta is new.
-
-    Args:
-        input_price (float): Input token price, $/M tokens.
-        output_price (float): Output token price, $/M tokens.
-        cache_read_price (float | None): Cache read price, $/M. None → 0.0.
-        cache_write_price (float | None): Cache write price, $/M. None → 0.0.
-        sessions_per_month (int): Total sessions per month.
-        questions_per_session (float): Questions/session (default 5).
-        input_tokens (int): User question tokens (default 100).
-        output_tokens (int): Final turn output tokens (default 100).
-        system_prompt_tokens (int): System prompt tokens (default 1000).
-        tools_passed_to_agent (int): Number of tools in the agent's schema (default 10).
-        tool_spec_tokens (int): Tokens per tool specification (default 100).
-        rag_chunks (int): RAG chunks per question (default 10).
-        rag_tokens_per_chunk (int): Tokens per RAG chunk (default 300).
-        tools_invoked (int): Tool calls per question (default 5).
-        tool_call_tokens (int): Tokens per tool call JSON (default 100).
-        tool_result_tokens (int): Tokens per tool result (default 100).
-
-    Returns:
-        dict: assumptions, per_question, per_session, monthly_tokens,
-        with_cache (dict with total_monthly, total_annual),
-        no_cache (dict with total_monthly, total_annual),
-        savings_monthly, savings_annual, savings_pct (float),
-        explanation (dict): token_profile, turn_by_turn_q1,
-            cross_question_caching, cache_math, no_cache_baseline,
-            monthly_rollup, prices_used.
-    """
-    # Input validation
-    if sessions_per_month <= 0:
-        raise ValueError(f"sessions_per_month must be > 0, got {sessions_per_month}")
-    if questions_per_session <= 0:
-        raise ValueError(f"questions_per_session must be > 0, got {questions_per_session}")
-    if tools_invoked > tools_passed_to_agent:
-        raise ValueError(f"tools_invoked ({tools_invoked}) cannot exceed tools_passed_to_agent ({tools_passed_to_agent})")
-
-    # Guard against None cache prices (models without caching support)
-    # When caching is not supported, price all tokens at input_price so
-    # with_cache total equals no_cache total (0% savings).
-    cache_read_price = cache_read_price if cache_read_price is not None else input_price
-    cache_write_price = cache_write_price if cache_write_price is not None else input_price
-    tool_desc_tokens = tools_passed_to_agent * tool_spec_tokens
-    N = tools_invoked
-    turns_per_question = N + 1
-    rag_tokens = rag_chunks * rag_tokens_per_chunk
-    delta = tool_call_tokens + tool_result_tokens
-    questions_per_month = sessions_per_month * questions_per_session
-
-    if questions_per_month == 0 or sessions_per_month == 0:
-        return {
-            "assumptions": {"sessions_per_month": sessions_per_month, "questions_per_session": questions_per_session},
-            "per_question": {}, "per_session": {}, "monthly_tokens": {},
-            "with_cache": {"total_monthly": 0, "total_annual": 0},
-            "no_cache": {"total_monthly": 0, "total_annual": 0},
-            "savings_monthly": 0, "savings_annual": 0, "savings_pct": 0,
-            "explanation": {"note": "Zero sessions or questions - no cost."},
-        }
-
-    # Base prompt on turn 0 of any question
-    cacheable_base = system_prompt_tokens + tool_desc_tokens
-    base_prompt = cacheable_base + input_tokens + rag_tokens
-
-    # --- First question in session ---
-    # Turn 0: all new → cache write (will be re-read on turn 1)
-    # Turns 1..N-1: prefix = cache read, delta = cache write (will be re-read)
-    # Turn N (last): prefix = cache read, delta = regular input (not re-read)
-    q1_cache_write = base_prompt + (N - 1) * delta
-    q1_cache_read = 0
-    for k in range(1, turns_per_question):
-        q1_cache_read += base_prompt + (k - 1) * delta
-    q1_regular = delta  # last turn only
-
-    # --- Subsequent questions (2nd..last) in session ---
-    # Turn 0: system+tools = cache read (from prior Q), user+RAG = cache write (new)
-    # Turns 1..N-1: full prefix = cache read, delta = cache write
-    # Turn N (last): full prefix = cache read, delta = regular input
-    q2_cache_write = (input_tokens + rag_tokens) + (N - 1) * delta
-    q2_cache_read = cacheable_base  # turn 0: system+tools cached
-    for k in range(1, turns_per_question):
-        q2_cache_read += base_prompt + (k - 1) * delta
-    q2_regular = delta
-
-    # --- Per session ---
-    n_subsequent = questions_per_session - 1
-    session_cw = q1_cache_write + n_subsequent * q2_cache_write
-    session_cr = q1_cache_read + n_subsequent * q2_cache_read
-    session_reg = q1_regular + n_subsequent * q2_regular
-    output_per_question = output_tokens + tools_invoked * tool_call_tokens
-    session_out = questions_per_session * output_per_question
-
-    # --- Monthly costs ---
-    monthly_cw = sessions_per_month * (session_cw / 1e6) * cache_write_price
-    monthly_cr = sessions_per_month * (session_cr / 1e6) * cache_read_price
-    monthly_reg = sessions_per_month * (session_reg / 1e6) * input_price
-    monthly_out = sessions_per_month * (session_out / 1e6) * output_price
-    total_cached = monthly_cw + monthly_cr + monthly_reg + monthly_out
-
-    # --- No-cache baseline ---
-    # Every turn sends full prompt at regular input price
-    total_input_per_question = 0
-    for t in range(turns_per_question):
-        total_input_per_question += base_prompt + t * delta
-    total_no_cache_input = questions_per_month * (total_input_per_question / 1e6) * input_price
-    total_no_cache_output = questions_per_month * (output_per_question / 1e6) * output_price
-    total_no_cache = total_no_cache_input + total_no_cache_output
-
-    savings = total_no_cache - total_cached
-    savings_pct = (savings / total_no_cache) * 100 if total_no_cache > 0 else 0
-
-    # ── Build step-by-step explanation ──
-    # Section 1: Token profile
-    token_profile = {
-        "base_context": f"{_fmt(base_prompt)} = {_fmt(system_prompt_tokens)} (system) + {_fmt(tool_desc_tokens)} (tools) + {_fmt(input_tokens)} (user) + {_fmt(rag_tokens)} (RAG)",
-        "cacheable_prefix": f"{_fmt(cacheable_base)} = {_fmt(system_prompt_tokens)} (system) + {_fmt(tool_desc_tokens)} (tools)",
-        "delta_per_turn": f"{_fmt(delta)} = {_fmt(tool_call_tokens)} (tool call) + {_fmt(tool_result_tokens)} (tool result)",
-        "turns_per_question": f"{turns_per_question} = {N} tool invocations + 1",
-        "output_per_question": f"{_fmt(output_per_question)} = {_fmt(output_tokens)} (response) + {N} × {_fmt(tool_call_tokens)} (tool calls)",
-    }
-
-    # Section 2: Turn-by-turn breakdown for Q1
-    turn_details = []
-    for t in range(turns_per_question):
-        tokens_in = base_prompt + t * delta
-        if t == 0:
-            cache_action = f"WRITE {_fmt(tokens_in)} (entire prompt — first turn of session)"
-        elif t < turns_per_question - 1:
-            prefix = base_prompt + (t - 1) * delta
-            cache_action = f"READ {_fmt(prefix)} (cached prefix) + WRITE {_fmt(delta)} (new tool delta)"
-        else:
-            prefix = base_prompt + (t - 1) * delta
-            cache_action = f"READ {_fmt(prefix)} (cached prefix) + REG {_fmt(delta)} (last turn — won't be re-read)"
-        turn_details.append(f"Turn {t}: {_fmt(tokens_in)} input tokens → {cache_action}")
-    total_input_q1 = sum(base_prompt + t * delta for t in range(turns_per_question))
-    turn_details.append(f"Total Q1 input: {_fmt(total_input_q1)} tokens across {turns_per_question} turns")
-
-    # Section 3: Cross-question caching
-    cross_question = {
-        "q2_turn0": f"READ {_fmt(cacheable_base)} (system+tools still cached from Q1) + WRITE {_fmt(input_tokens + rag_tokens)} (new user question + RAG)",
-        "savings": f"Cross-Q caching saves re-writing {_fmt(cacheable_base)} tokens at ${cache_write_price}/M on each subsequent question",
-    }
-
-    # Section 4: Cache math (monthly)
-    cache_math = {
-        "cache_write": f"{_fmt(sessions_per_month * session_cw)} tokens × ${cache_write_price}/M = ${monthly_cw:,.2f}",
-        "cache_read": f"{_fmt(sessions_per_month * session_cr)} tokens × ${cache_read_price}/M = ${monthly_cr:,.2f}",
-        "regular_input": f"{_fmt(sessions_per_month * session_reg)} tokens × ${input_price}/M = ${monthly_reg:,.2f}",
-        "output": f"{_fmt(sessions_per_month * session_out)} tokens × ${output_price}/M = ${monthly_out:,.2f}",
-        "total_cached": f"${monthly_cw:,.2f} + ${monthly_cr:,.2f} + ${monthly_reg:,.2f} + ${monthly_out:,.2f} = ${total_cached:,.2f}",
-    }
-
-    # Section 5: No-cache baseline
-    no_cache_math = {
-        "total_input_per_q": f"{_fmt(total_input_per_question)} tokens/question × {_fmt(questions_per_month)} questions × ${input_price}/M = ${total_no_cache_input:,.2f}",
-        "total_output": f"{_fmt(output_per_question)} tokens/question × {_fmt(questions_per_month)} questions × ${output_price}/M = ${total_no_cache_output:,.2f}",
-        "total_no_cache": f"${total_no_cache_input:,.2f} + ${total_no_cache_output:,.2f} = ${total_no_cache:,.2f}",
-    }
-
-    # Section 6: Monthly rollup
-    monthly_rollup = {
-        "questions_per_month": _fmt(questions_per_month),
-        "with_caching": f"${total_cached:,.2f}/mo (${total_cached / sessions_per_month:.4f}/session, ${total_cached / questions_per_month:.4f}/question)",
-        "without_caching": f"${total_no_cache:,.2f}/mo (${total_no_cache / sessions_per_month:.4f}/session)",
-        "savings": f"${savings:,.2f}/mo ({savings_pct:.1f}%)",
-    }
-
-    # Section 7: Prices used
-    prices_used = {
-        "input": f"${input_price}/M tokens",
-        "output": f"${output_price}/M tokens",
-        "cache_read": f"${cache_read_price}/M tokens ({cache_read_price/input_price*100:.0f}% of input)" if input_price > 0 else f"${cache_read_price}/M tokens",
-        "cache_write": f"${cache_write_price}/M tokens ({cache_write_price/input_price*100:.0f}% of input)" if input_price > 0 else f"${cache_write_price}/M tokens",
-    }
-
-    explanation = {
-        "token_profile": token_profile,
-        "turn_by_turn_q1": turn_details,
-        "cross_question_caching": cross_question,
-        "cache_math": cache_math,
-        "no_cache_baseline": no_cache_math,
-        "monthly_rollup": monthly_rollup,
-        "prices_used": prices_used,
-    }
-
-    return {
-        "assumptions": {
-            "sessions_per_month": sessions_per_month,
-            "questions_per_session": questions_per_session,
-            "questions_per_month": questions_per_month,
-            "tools_invoked": N,
-            "turns_per_question": turns_per_question,
-            "system_prompt_tokens": system_prompt_tokens,
-            "tools_passed_to_agent": tools_passed_to_agent,
-            "tool_spec_tokens": tool_spec_tokens,
-            "tool_desc_tokens": tool_desc_tokens,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "rag_tokens": rag_tokens,
-            "delta_per_tool_turn": delta,
-            "base_prompt": base_prompt,
-            "cacheable_base": cacheable_base,
-        },
-        "per_question": {
-            "q1_cache_write": q1_cache_write,
-            "q1_cache_read": q1_cache_read,
-            "q1_regular": q1_regular,
-            "q2_cache_write": q2_cache_write,
-            "q2_cache_read": q2_cache_read,
-            "q2_regular": q2_regular,
-        },
-        "per_session": {
-            "cache_write": session_cw,
-            "cache_read": session_cr,
-            "regular_input": session_reg,
-            "output": session_out,
-        },
-        "monthly_tokens": {
-            "cache_write": sessions_per_month * session_cw,
-            "cache_read": sessions_per_month * session_cr,
-            "regular_input": sessions_per_month * session_reg,
-            "output": sessions_per_month * session_out,
-        },
-        "with_cache": {
-            "cache_write_cost": monthly_cw,
-            "cache_read_cost": monthly_cr,
-            "regular_input_cost": monthly_reg,
-            "output_cost": monthly_out,
-            "total_monthly": total_cached,
-            "total_annual": total_cached * 12,
-        },
-        "no_cache": {
-            "input_cost": total_no_cache_input,
-            "output_cost": total_no_cache_output,
-            "total_monthly": total_no_cache,
-            "total_annual": total_no_cache * 12,
-        },
-        "savings_monthly": savings,
-        "savings_annual": savings * 12,
-        "savings_pct": savings_pct,
-        "explanation": explanation,
-    }
+# ─── DEPRECATED: calculate_agent_cost_with_incremental_caching ───────────────
+# Replaced by calculate_agent_session_compounded_cost() which handles sub-agents,
+# multi-model architectures, and report generation. Kept for reference only.
+#
+# def calculate_agent_cost_with_incremental_caching(
+#     input_price,
+#     output_price,
+#     cache_read_price,
+#     cache_write_price,
+#     sessions_per_month,
+#     questions_per_session=5,
+#     input_tokens=100,
+#     output_tokens=100,
+#     system_prompt_tokens=1000,
+#     tools_passed_to_agent=10,
+#     tool_spec_tokens=100,
+#     rag_chunks=10,
+#     rag_tokens_per_chunk=300,
+#     tools_invoked=5,
+#     tool_call_tokens=100,
+#     tool_result_tokens=100,
+# ):
+#     """Calculate agent monthly cost with prompt caching vs. without, showing savings.
+# 
+#     Args (required):
+#         input_price (float): Input token price, $/M tokens.
+#         output_price (float): Output token price, $/M tokens.
+#         cache_read_price (float|None): Cache read price, $/M tokens.
+#         cache_write_price (float|None): Cache write price, $/M tokens.
+#         sessions_per_month (int): Total sessions per month.
+#     Args (optional):
+#         questions_per_session (float): Questions per session. Default 5.
+#         tools_invoked (int): Tool calls per question. Default 5.
+#         rag_chunks (int): RAG chunks per question. Default 10.
+# 
+#     Example:
+#         calculate_agent_cost_with_incremental_caching(3.0, 15.0, 0.3, 3.75, 10000)
+# 
+#     Returns: dict with with_cache, no_cache, savings_pct, and explanation.
+# 
+#     --- Detailed Documentation ---
+# 
+#     Uses incremental caching: each LLM turn's prompt extends the prior turn's.
+#     The unchanged prefix is a cache read; only the new delta is new.
+# 
+#     Args:
+#         input_price (float): Input token price, $/M tokens.
+#         output_price (float): Output token price, $/M tokens.
+#         cache_read_price (float | None): Cache read price, $/M. None → 0.0.
+#         cache_write_price (float | None): Cache write price, $/M. None → 0.0.
+#         sessions_per_month (int): Total sessions per month.
+#         questions_per_session (float): Questions/session (default 5).
+#         input_tokens (int): User question tokens (default 100).
+#         output_tokens (int): Final turn output tokens (default 100).
+#         system_prompt_tokens (int): System prompt tokens (default 1000).
+#         tools_passed_to_agent (int): Number of tools in the agent's schema (default 10).
+#         tool_spec_tokens (int): Tokens per tool specification (default 100).
+#         rag_chunks (int): RAG chunks per question (default 10).
+#         rag_tokens_per_chunk (int): Tokens per RAG chunk (default 300).
+#         tools_invoked (int): Tool calls per question (default 5).
+#         tool_call_tokens (int): Tokens per tool call JSON (default 100).
+#         tool_result_tokens (int): Tokens per tool result (default 100).
+# 
+#     Returns:
+#         dict: assumptions, per_question, per_session, monthly_tokens,
+#         with_cache (dict with total_monthly, total_annual),
+#         no_cache (dict with total_monthly, total_annual),
+#         savings_monthly, savings_annual, savings_pct (float),
+#         explanation (dict): token_profile, turn_by_turn_q1,
+#             cross_question_caching, cache_math, no_cache_baseline,
+#             monthly_rollup, prices_used.
+#     """
+#     # Input validation
+#     if sessions_per_month <= 0:
+#         raise ValueError(f"sessions_per_month must be > 0, got {sessions_per_month}")
+#     if questions_per_session <= 0:
+#         raise ValueError(f"questions_per_session must be > 0, got {questions_per_session}")
+#     if tools_invoked > tools_passed_to_agent:
+#         raise ValueError(f"tools_invoked ({tools_invoked}) cannot exceed tools_passed_to_agent ({tools_passed_to_agent})")
+# 
+#     # Guard against None cache prices (models without caching support)
+#     # When caching is not supported, price all tokens at input_price so
+#     # with_cache total equals no_cache total (0% savings).
+#     cache_read_price = cache_read_price if cache_read_price is not None else input_price
+#     cache_write_price = cache_write_price if cache_write_price is not None else input_price
+#     tool_desc_tokens = tools_passed_to_agent * tool_spec_tokens
+#     N = tools_invoked
+#     turns_per_question = N + 1
+#     rag_tokens = rag_chunks * rag_tokens_per_chunk
+#     delta = tool_call_tokens + tool_result_tokens
+#     questions_per_month = sessions_per_month * questions_per_session
+# 
+#     if questions_per_month == 0 or sessions_per_month == 0:
+#         return {
+#             "assumptions": {"sessions_per_month": sessions_per_month, "questions_per_session": questions_per_session},
+#             "per_question": {}, "per_session": {}, "monthly_tokens": {},
+#             "with_cache": {"total_monthly": 0, "total_annual": 0},
+#             "no_cache": {"total_monthly": 0, "total_annual": 0},
+#             "savings_monthly": 0, "savings_annual": 0, "savings_pct": 0,
+#             "explanation": {"note": "Zero sessions or questions - no cost."},
+#         }
+# 
+#     # Base prompt on turn 0 of any question
+#     cacheable_base = system_prompt_tokens + tool_desc_tokens
+#     base_prompt = cacheable_base + input_tokens + rag_tokens
+# 
+#     # --- First question in session ---
+#     # Turn 0: all new → cache write (will be re-read on turn 1)
+#     # Turns 1..N-1: prefix = cache read, delta = cache write (will be re-read)
+#     # Turn N (last): prefix = cache read, delta = regular input (not re-read)
+#     q1_cache_write = base_prompt + (N - 1) * delta
+#     q1_cache_read = 0
+#     for k in range(1, turns_per_question):
+#         q1_cache_read += base_prompt + (k - 1) * delta
+#     q1_regular = delta  # last turn only
+# 
+#     # --- Subsequent questions (2nd..last) in session ---
+#     # Turn 0: system+tools = cache read (from prior Q), user+RAG = cache write (new)
+#     # Turns 1..N-1: full prefix = cache read, delta = cache write
+#     # Turn N (last): full prefix = cache read, delta = regular input
+#     q2_cache_write = (input_tokens + rag_tokens) + (N - 1) * delta
+#     q2_cache_read = cacheable_base  # turn 0: system+tools cached
+#     for k in range(1, turns_per_question):
+#         q2_cache_read += base_prompt + (k - 1) * delta
+#     q2_regular = delta
+# 
+#     # --- Per session ---
+#     n_subsequent = questions_per_session - 1
+#     session_cw = q1_cache_write + n_subsequent * q2_cache_write
+#     session_cr = q1_cache_read + n_subsequent * q2_cache_read
+#     session_reg = q1_regular + n_subsequent * q2_regular
+#     output_per_question = output_tokens + tools_invoked * tool_call_tokens
+#     session_out = questions_per_session * output_per_question
+# 
+#     # --- Monthly costs ---
+#     monthly_cw = sessions_per_month * (session_cw / 1e6) * cache_write_price
+#     monthly_cr = sessions_per_month * (session_cr / 1e6) * cache_read_price
+#     monthly_reg = sessions_per_month * (session_reg / 1e6) * input_price
+#     monthly_out = sessions_per_month * (session_out / 1e6) * output_price
+#     total_cached = monthly_cw + monthly_cr + monthly_reg + monthly_out
+# 
+#     # --- No-cache baseline ---
+#     # Every turn sends full prompt at regular input price
+#     total_input_per_question = 0
+#     for t in range(turns_per_question):
+#         total_input_per_question += base_prompt + t * delta
+#     total_no_cache_input = questions_per_month * (total_input_per_question / 1e6) * input_price
+#     total_no_cache_output = questions_per_month * (output_per_question / 1e6) * output_price
+#     total_no_cache = total_no_cache_input + total_no_cache_output
+# 
+#     savings = total_no_cache - total_cached
+#     savings_pct = (savings / total_no_cache) * 100 if total_no_cache > 0 else 0
+# 
+#     # ── Build step-by-step explanation ──
+#     # Section 1: Token profile
+#     token_profile = {
+#         "base_context": f"{_fmt(base_prompt)} = {_fmt(system_prompt_tokens)} (system) + {_fmt(tool_desc_tokens)} (tools) + {_fmt(input_tokens)} (user) + {_fmt(rag_tokens)} (RAG)",
+#         "cacheable_prefix": f"{_fmt(cacheable_base)} = {_fmt(system_prompt_tokens)} (system) + {_fmt(tool_desc_tokens)} (tools)",
+#         "delta_per_turn": f"{_fmt(delta)} = {_fmt(tool_call_tokens)} (tool call) + {_fmt(tool_result_tokens)} (tool result)",
+#         "turns_per_question": f"{turns_per_question} = {N} tool invocations + 1",
+#         "output_per_question": f"{_fmt(output_per_question)} = {_fmt(output_tokens)} (response) + {N} × {_fmt(tool_call_tokens)} (tool calls)",
+#     }
+# 
+#     # Section 2: Turn-by-turn breakdown for Q1
+#     turn_details = []
+#     for t in range(turns_per_question):
+#         tokens_in = base_prompt + t * delta
+#         if t == 0:
+#             cache_action = f"WRITE {_fmt(tokens_in)} (entire prompt — first turn of session)"
+#         elif t < turns_per_question - 1:
+#             prefix = base_prompt + (t - 1) * delta
+#             cache_action = f"READ {_fmt(prefix)} (cached prefix) + WRITE {_fmt(delta)} (new tool delta)"
+#         else:
+#             prefix = base_prompt + (t - 1) * delta
+#             cache_action = f"READ {_fmt(prefix)} (cached prefix) + REG {_fmt(delta)} (last turn — won't be re-read)"
+#         turn_details.append(f"Turn {t}: {_fmt(tokens_in)} input tokens → {cache_action}")
+#     total_input_q1 = sum(base_prompt + t * delta for t in range(turns_per_question))
+#     turn_details.append(f"Total Q1 input: {_fmt(total_input_q1)} tokens across {turns_per_question} turns")
+# 
+#     # Section 3: Cross-question caching
+#     cross_question = {
+#         "q2_turn0": f"READ {_fmt(cacheable_base)} (system+tools still cached from Q1) + WRITE {_fmt(input_tokens + rag_tokens)} (new user question + RAG)",
+#         "savings": f"Cross-Q caching saves re-writing {_fmt(cacheable_base)} tokens at ${cache_write_price}/M on each subsequent question",
+#     }
+# 
+#     # Section 4: Cache math (monthly)
+#     cache_math = {
+#         "cache_write": f"{_fmt(sessions_per_month * session_cw)} tokens × ${cache_write_price}/M = ${monthly_cw:,.2f}",
+#         "cache_read": f"{_fmt(sessions_per_month * session_cr)} tokens × ${cache_read_price}/M = ${monthly_cr:,.2f}",
+#         "regular_input": f"{_fmt(sessions_per_month * session_reg)} tokens × ${input_price}/M = ${monthly_reg:,.2f}",
+#         "output": f"{_fmt(sessions_per_month * session_out)} tokens × ${output_price}/M = ${monthly_out:,.2f}",
+#         "total_cached": f"${monthly_cw:,.2f} + ${monthly_cr:,.2f} + ${monthly_reg:,.2f} + ${monthly_out:,.2f} = ${total_cached:,.2f}",
+#     }
+# 
+#     # Section 5: No-cache baseline
+#     no_cache_math = {
+#         "total_input_per_q": f"{_fmt(total_input_per_question)} tokens/question × {_fmt(questions_per_month)} questions × ${input_price}/M = ${total_no_cache_input:,.2f}",
+#         "total_output": f"{_fmt(output_per_question)} tokens/question × {_fmt(questions_per_month)} questions × ${output_price}/M = ${total_no_cache_output:,.2f}",
+#         "total_no_cache": f"${total_no_cache_input:,.2f} + ${total_no_cache_output:,.2f} = ${total_no_cache:,.2f}",
+#     }
+# 
+#     # Section 6: Monthly rollup
+#     monthly_rollup = {
+#         "questions_per_month": _fmt(questions_per_month),
+#         "with_caching": f"${total_cached:,.2f}/mo (${total_cached / sessions_per_month:.4f}/session, ${total_cached / questions_per_month:.4f}/question)",
+#         "without_caching": f"${total_no_cache:,.2f}/mo (${total_no_cache / sessions_per_month:.4f}/session)",
+#         "savings": f"${savings:,.2f}/mo ({savings_pct:.1f}%)",
+#     }
+# 
+#     # Section 7: Prices used
+#     prices_used = {
+#         "input": f"${input_price}/M tokens",
+#         "output": f"${output_price}/M tokens",
+#         "cache_read": f"${cache_read_price}/M tokens ({cache_read_price/input_price*100:.0f}% of input)" if input_price > 0 else f"${cache_read_price}/M tokens",
+#         "cache_write": f"${cache_write_price}/M tokens ({cache_write_price/input_price*100:.0f}% of input)" if input_price > 0 else f"${cache_write_price}/M tokens",
+#     }
+# 
+#     explanation = {
+#         "token_profile": token_profile,
+#         "turn_by_turn_q1": turn_details,
+#         "cross_question_caching": cross_question,
+#         "cache_math": cache_math,
+#         "no_cache_baseline": no_cache_math,
+#         "monthly_rollup": monthly_rollup,
+#         "prices_used": prices_used,
+#     }
+# 
+#     return {
+#         "assumptions": {
+#             "sessions_per_month": sessions_per_month,
+#             "questions_per_session": questions_per_session,
+#             "questions_per_month": questions_per_month,
+#             "tools_invoked": N,
+#             "turns_per_question": turns_per_question,
+#             "system_prompt_tokens": system_prompt_tokens,
+#             "tools_passed_to_agent": tools_passed_to_agent,
+#             "tool_spec_tokens": tool_spec_tokens,
+#             "tool_desc_tokens": tool_desc_tokens,
+#             "input_tokens": input_tokens,
+#             "output_tokens": output_tokens,
+#             "rag_tokens": rag_tokens,
+#             "delta_per_tool_turn": delta,
+#             "base_prompt": base_prompt,
+#             "cacheable_base": cacheable_base,
+#         },
+#         "per_question": {
+#             "q1_cache_write": q1_cache_write,
+#             "q1_cache_read": q1_cache_read,
+#             "q1_regular": q1_regular,
+#             "q2_cache_write": q2_cache_write,
+#             "q2_cache_read": q2_cache_read,
+#             "q2_regular": q2_regular,
+#         },
+#         "per_session": {
+#             "cache_write": session_cw,
+#             "cache_read": session_cr,
+#             "regular_input": session_reg,
+#             "output": session_out,
+#         },
+#         "monthly_tokens": {
+#             "cache_write": sessions_per_month * session_cw,
+#             "cache_read": sessions_per_month * session_cr,
+#             "regular_input": sessions_per_month * session_reg,
+#             "output": sessions_per_month * session_out,
+#         },
+#         "with_cache": {
+#             "cache_write_cost": monthly_cw,
+#             "cache_read_cost": monthly_cr,
+#             "regular_input_cost": monthly_reg,
+#             "output_cost": monthly_out,
+#             "total_monthly": total_cached,
+#             "total_annual": total_cached * 12,
+#         },
+#         "no_cache": {
+#             "input_cost": total_no_cache_input,
+#             "output_cost": total_no_cache_output,
+#             "total_monthly": total_no_cache,
+#             "total_annual": total_no_cache * 12,
+#         },
+#         "savings_monthly": savings,
+#         "savings_annual": savings * 12,
+#         "savings_pct": savings_pct,
+#         "explanation": explanation,
+#     }
+# 
+# ─── END DEPRECATED ──────────────────────────────────────────────────────────
 
 
 def calculate_compounded_tokens_for_agent(
@@ -1927,7 +2079,19 @@ def calculate_compounded_tokens_for_agent(
     history_mode="full",  # "full" (b) or "condensed" (a)
     detail_level="summary",  # "summary" or "full"
 ):
-    """Calculate compounded token usage for an agent session with cross-question history.
+    """Calculate compounded input/output tokens across a multi-question agent session.
+
+    Args (optional):
+        questions_per_agent_session (int): Questions in the session. Default 5.
+        tools_invoked (int): Tool calls per question. Default 5.
+        history_mode (str): "full" or "condensed". Default "full".
+
+    Example:
+        calculate_compounded_tokens_for_agent(questions_per_agent_session=5, tools_invoked=5)
+
+    Returns: dict with session_total_input, session_total_output, session_total_tokens.
+
+    --- Detailed Documentation ---
 
     Models two levels of token compounding:
     1. Within a question (span-level): each tool call cycle re-sends the full context
@@ -2194,7 +2358,19 @@ def calculate_rag_subagent_tokens(
     output_tokens=None,
     detail_level="summary",  # "summary" or "full"
 ):
-    """Calculate token usage for a single RAG sub-agent invocation.
+    """Calculate total token usage for a single RAG sub-agent invocation.
+
+    Args (optional):
+        rag_n_retrieval_calls (int): Number of KB retrieval calls. Default 2.
+        rag_n_chunks (int): Chunks returned per retrieval. Default 10.
+        rag_chunk_size (int): Tokens per chunk. Default 300.
+
+    Example:
+        calculate_rag_subagent_tokens(rag_n_retrieval_calls=2, rag_n_chunks=10)
+
+    Returns: dict with total_input, total_output, total_tokens, output_tokens_to_main_agent.
+
+    --- Detailed Documentation ---
 
     Models a RAG sub-agent that:
     1. Receives a query from the main agent (input_query_tokens)
@@ -2209,7 +2385,7 @@ def calculate_rag_subagent_tokens(
     # NOTE: Interleaved tool call order (retrieve → rerank → retrieve → rerank) could be
     # added later if needed. For now, sequential grouping is assumed.
 
-    # NOTE: Prompt caching is modeled via calculate_subagent_cost() when cache prices
+    # NOTE: Prompt caching is modeled via _calculate_subagent_cost() when cache prices
     # are provided. The cacheable prefix (system_prompt + tool_specs + query) is
     # identical across all LLM cycles within a single invocation. Cycle 1 pays
     # cache_write, cycles 2+ pay cache_read. Caching is only applied when the prefix
@@ -2235,17 +2411,17 @@ def calculate_rag_subagent_tokens(
             output_tokens_to_main_agent, assumptions, explanation.
     """
     # Resolve defaults from config (explicit values passed by caller always win)
-    system_prompt_tokens = resolve_setting("rag_defaults", "system_prompt_tokens", system_prompt_tokens)
-    n_tools = resolve_setting("rag_defaults", "n_tools", n_tools)
-    tool_spec_tokens = resolve_setting("rag_defaults", "tool_spec_tokens", tool_spec_tokens)
-    input_query_tokens = resolve_setting("rag_defaults", "input_query_tokens", input_query_tokens)
-    tool_call_tokens = resolve_setting("rag_defaults", "tool_call_tokens", tool_call_tokens)
-    rag_n_retrieval_calls = resolve_setting("rag_defaults", "rag_n_retrieval_calls", rag_n_retrieval_calls)
-    rag_n_chunks = resolve_setting("rag_defaults", "rag_n_chunks", rag_n_chunks)
-    rag_chunk_size = resolve_setting("rag_defaults", "rag_chunk_size", rag_chunk_size)
-    n_other_tool_calls = resolve_setting("rag_defaults", "n_other_tool_calls", n_other_tool_calls)
-    other_tool_result_tokens = resolve_setting("rag_defaults", "other_tool_result_tokens", other_tool_result_tokens)
-    output_tokens = resolve_setting("rag_defaults", "output_tokens", output_tokens)
+    system_prompt_tokens = _resolve_setting("rag_defaults", "system_prompt_tokens", system_prompt_tokens)
+    n_tools = _resolve_setting("rag_defaults", "n_tools", n_tools)
+    tool_spec_tokens = _resolve_setting("rag_defaults", "tool_spec_tokens", tool_spec_tokens)
+    input_query_tokens = _resolve_setting("rag_defaults", "input_query_tokens", input_query_tokens)
+    tool_call_tokens = _resolve_setting("rag_defaults", "tool_call_tokens", tool_call_tokens)
+    rag_n_retrieval_calls = _resolve_setting("rag_defaults", "rag_n_retrieval_calls", rag_n_retrieval_calls)
+    rag_n_chunks = _resolve_setting("rag_defaults", "rag_n_chunks", rag_n_chunks)
+    rag_chunk_size = _resolve_setting("rag_defaults", "rag_chunk_size", rag_chunk_size)
+    n_other_tool_calls = _resolve_setting("rag_defaults", "n_other_tool_calls", n_other_tool_calls)
+    other_tool_result_tokens = _resolve_setting("rag_defaults", "other_tool_result_tokens", other_tool_result_tokens)
+    output_tokens = _resolve_setting("rag_defaults", "output_tokens", output_tokens)
 
     # Input validation
     if rag_n_retrieval_calls < 0:
@@ -2390,7 +2566,19 @@ def calculate_research_subagent_tokens(
     output_tokens=None,
     detail_level="summary",  # "summary" or "full"
 ):
-    """Calculate token usage for a single internet research sub-agent invocation.
+    """Calculate total token usage for a single internet research sub-agent invocation.
+
+    Args (optional):
+        n_research_iterations (int): Search-fetch iteration pairs. Default 4.
+        fetch_probability (float): Probability a search leads to a fetch. Default 0.5.
+        output_tokens (int): Final synthesized response tokens. Default 1000.
+
+    Example:
+        calculate_research_subagent_tokens(n_research_iterations=4, fetch_probability=0.5)
+
+    Returns: dict with total_input, total_output, total_tokens, output_tokens_to_main_agent.
+
+    --- Detailed Documentation ---
 
     Models a research sub-agent that iteratively searches and fetches web content:
     1. Each iteration: model calls web_search → gets snippets
@@ -2403,7 +2591,7 @@ def calculate_research_subagent_tokens(
     The model is stateless — every call sends system_prompt + tool_specs + full
     accumulated history. Token compounding applies within this invocation.
 
-    # NOTE: Prompt caching is modeled via calculate_subagent_cost() when cache prices
+    # NOTE: Prompt caching is modeled via _calculate_subagent_cost() when cache prices
     # are provided. The cacheable prefix (system_prompt + tool_specs + query) is
     # identical across all LLM cycles within a single invocation. Cycle 1 pays
     # cache_write, cycles 2+ pay cache_read. Caching is only applied when the prefix
@@ -2428,16 +2616,16 @@ def calculate_research_subagent_tokens(
             output_tokens_to_main_agent, assumptions, explanation.
     """
     # Resolve defaults from config (explicit values passed by caller always win)
-    system_prompt_tokens = resolve_setting("research_defaults", "system_prompt_tokens", system_prompt_tokens)
-    n_tools = resolve_setting("research_defaults", "n_tools", n_tools)
-    tool_spec_tokens = resolve_setting("research_defaults", "tool_spec_tokens", tool_spec_tokens)
-    input_query_tokens = resolve_setting("research_defaults", "input_query_tokens", input_query_tokens)
-    tool_call_tokens = resolve_setting("research_defaults", "tool_call_tokens", tool_call_tokens)
-    n_research_iterations = resolve_setting("research_defaults", "n_research_iterations", n_research_iterations)
-    fetch_probability = resolve_setting("research_defaults", "fetch_probability", fetch_probability)
-    search_result_tokens = resolve_setting("research_defaults", "search_result_tokens", search_result_tokens)
-    fetch_result_tokens = resolve_setting("research_defaults", "fetch_result_tokens", fetch_result_tokens)
-    output_tokens = resolve_setting("research_defaults", "output_tokens", output_tokens)
+    system_prompt_tokens = _resolve_setting("research_defaults", "system_prompt_tokens", system_prompt_tokens)
+    n_tools = _resolve_setting("research_defaults", "n_tools", n_tools)
+    tool_spec_tokens = _resolve_setting("research_defaults", "tool_spec_tokens", tool_spec_tokens)
+    input_query_tokens = _resolve_setting("research_defaults", "input_query_tokens", input_query_tokens)
+    tool_call_tokens = _resolve_setting("research_defaults", "tool_call_tokens", tool_call_tokens)
+    n_research_iterations = _resolve_setting("research_defaults", "n_research_iterations", n_research_iterations)
+    fetch_probability = _resolve_setting("research_defaults", "fetch_probability", fetch_probability)
+    search_result_tokens = _resolve_setting("research_defaults", "search_result_tokens", search_result_tokens)
+    fetch_result_tokens = _resolve_setting("research_defaults", "fetch_result_tokens", fetch_result_tokens)
+    output_tokens = _resolve_setting("research_defaults", "output_tokens", output_tokens)
 
     # Input validation
     if n_research_iterations < 0:
@@ -2594,7 +2782,7 @@ def calculate_research_subagent_tokens(
     return result
 
 
-def calculate_subagent_cost(
+def _calculate_subagent_cost(
     token_result,
     input_price,
     output_price,
@@ -2755,7 +2943,7 @@ def calculate_subagent_cost(
     }
 
 
-def calculate_main_agent_compounded_cost(
+def _calculate_main_agent_compounded_cost(
     # Pricing parameters (REQUIRED — no defaults)
     input_price,
     output_price,
@@ -2829,16 +3017,16 @@ def calculate_main_agent_compounded_cost(
             explanation.
     """
     # Resolve defaults from config (explicit values passed by caller always win)
-    questions_per_agent_session = resolve_setting("agent_defaults", "questions_per_session", questions_per_agent_session)
-    input_tokens = resolve_setting("agent_defaults", "input_tokens", input_tokens)
-    output_tokens = resolve_setting("agent_defaults", "output_tokens", output_tokens)
-    system_prompt_tokens = resolve_setting("agent_defaults", "system_prompt_tokens", system_prompt_tokens)
-    tools_passed_to_agent = resolve_setting("agent_defaults", "tools_passed", tools_passed_to_agent)
-    tool_spec_tokens = resolve_setting("agent_defaults", "tool_spec_tokens", tool_spec_tokens)
-    tools_invoked = resolve_setting("agent_defaults", "tools_invoked", tools_invoked)
-    tool_call_tokens = resolve_setting("agent_defaults", "tool_call_tokens", tool_call_tokens)
-    tool_result_tokens = resolve_setting("agent_defaults", "tool_result_tokens", tool_result_tokens)
-    history_mode = resolve_setting("defaults", "history_mode", history_mode)
+    questions_per_agent_session = _resolve_setting("agent_defaults", "questions_per_session", questions_per_agent_session)
+    input_tokens = _resolve_setting("agent_defaults", "input_tokens", input_tokens)
+    output_tokens = _resolve_setting("agent_defaults", "output_tokens", output_tokens)
+    system_prompt_tokens = _resolve_setting("agent_defaults", "system_prompt_tokens", system_prompt_tokens)
+    tools_passed_to_agent = _resolve_setting("agent_defaults", "tools_passed", tools_passed_to_agent)
+    tool_spec_tokens = _resolve_setting("agent_defaults", "tool_spec_tokens", tool_spec_tokens)
+    tools_invoked = _resolve_setting("agent_defaults", "tools_invoked", tools_invoked)
+    tool_call_tokens = _resolve_setting("agent_defaults", "tool_call_tokens", tool_call_tokens)
+    tool_result_tokens = _resolve_setting("agent_defaults", "tool_result_tokens", tool_result_tokens)
+    history_mode = _resolve_setting("defaults", "history_mode", history_mode)
 
     # Validate cache_history_checkpoints
     # Max 3 because: Bedrock allows 4 checkpoints total per request.
@@ -3186,7 +3374,26 @@ def calculate_agent_session_compounded_cost(
     # Report output directory (optional — writes bedrock-pricing.md within it)
     output_dir=None,
 ):
-    """Calculate total cost for an AI agent session including main agent and sub-agents.
+    """Total cost for an agent session (main + sub-agents). Accepts prices directly — no cache lookup.
+
+    Required keys in main_agent_config:
+        input_price (float): $/M input tokens.
+        output_price (float): $/M output tokens.
+        cache_read_price (float|None): $/M cache read. None = no caching.
+        cache_write_price (float|None): $/M cache write.
+        agent_sessions_per_month (int): Monthly session volume.
+
+    Example:
+        calculate_agent_session_compounded_cost(
+            main_agent_config={"input_price": 3.0, "output_price": 15.0,
+                "cache_read_price": 0.3, "cache_write_price": 3.75,
+                "agent_sessions_per_month": 10000}
+        )
+
+    Returns dict: session_total, monthly_total, annual_total, savings_pct,
+        subagents_summary, file_path (detailed report written to disk).
+
+    --- Detailed Documentation ---
 
     Use this tool when a user asks about cost, price, spend, or budget for any
     Bedrock agent workload — single agent or multi-agent. This is the primary
@@ -3339,11 +3546,11 @@ def calculate_agent_session_compounded_cost(
 
     questions_per_session = main_agent_config.get(
         "questions_per_agent_session",
-        resolve_setting("agent_defaults", "questions_per_session")
+        _resolve_setting("agent_defaults", "questions_per_session")
     )
     tools_invoked = main_agent_config.get(
         "tools_invoked",
-        resolve_setting("agent_defaults", "tools_invoked")
+        _resolve_setting("agent_defaults", "tools_invoked")
     )
 
     # Validate sub-agent configs
@@ -3442,11 +3649,11 @@ def calculate_agent_session_compounded_cost(
         adjusted_config["tool_result_tokens"] = tool_result_list
 
     # ── Step 3: Calculate main agent cost ──
-    # Remove keys that aren't parameters of calculate_main_agent_compounded_cost
+    # Remove keys that aren't parameters of _calculate_main_agent_compounded_cost
     _excluded_keys = {"detail_level", "model_name"}
     cost_params = {k: v for k, v in adjusted_config.items() if k not in _excluded_keys}
     cost_params["detail_level"] = "full"  # always need full detail internally
-    main_cost_result = calculate_main_agent_compounded_cost(**cost_params)
+    main_cost_result = _calculate_main_agent_compounded_cost(**cost_params)
 
     # ── Step 4: Calculate sub-agent costs ──
     subagent_cost_results = []
@@ -3457,7 +3664,7 @@ def calculate_agent_session_compounded_cost(
         qi = sa_config["questions_invoked"]
 
         # Cost per invocation (with caching if prices provided)
-        cost_per_invocation = calculate_subagent_cost(
+        cost_per_invocation = _calculate_subagent_cost(
             token_result,
             input_price=model_prices["input_price"],
             output_price=model_prices["output_price"],
@@ -3636,7 +3843,7 @@ def calculate_agent_session_compounded_cost(
     return _build_compact_summary(result, file_path)
 
 
-def format_price(p):
+def _format_price(p):
     try:
         v = float(p)
         if v == 0: return "$0.00"
@@ -4292,7 +4499,7 @@ def _format_full_output(result, cache_status=None, models_found=None, all_tiers=
     return "\n".join(lines)
 
 
-def generate_model_markdown(results):
+def _generate_model_markdown(results):
     if not results:
         return "No pricing data found matching the specified filters.\n"
     tree = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
@@ -4320,11 +4527,11 @@ def generate_model_markdown(results):
                 for tier in sorted(tree[region][provider][model].keys()):
                     for d in tree[region][provider][model][tier]:
                         desc = d["description"][:80] if d["description"] else "-"
-                        lines.append(f"| {tier} | {desc} | {d['unit']} | {format_price(d['price_usd'])} |")
+                        lines.append(f"| {tier} | {desc} | {d['unit']} | {_format_price(d['price_usd'])} |")
     return "\n".join(lines)
 
 
-def generate_agentcore_markdown(results):
+def _generate_agentcore_markdown(results):
     if not results:
         return ""
     tree = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -4340,7 +4547,7 @@ def generate_agentcore_markdown(results):
             for sub in sorted(tree[region][component].keys()):
                 for d in tree[region][component][sub]:
                     desc = d["description"][:80] if d["description"] else "-"
-                    lines.append(f"| {sub} | {desc} | {d['unit']} | {format_price(d['price_usd'])} |")
+                    lines.append(f"| {sub} | {desc} | {d['unit']} | {_format_price(d['price_usd'])} |")
     return "\n".join(lines)
 
 
@@ -4508,7 +4715,23 @@ def refresh_quotas(output_dir, regions=None):
 
 def query_quotas(cache_dir, region_filter=None, model_filter=None, quota_type_filter=None,
                  inference_type_filter=None):
-    """Query cached quota data. Works in sandbox (no boto3 needed).
+    """Query cached RPM/TPM/TPD quota data with optional filters.
+
+    Args (required):
+        cache_dir (str): Directory containing bedrock_quotas.json.
+    Args (optional):
+        region_filter (str): AWS region code (e.g. "us-west-2"). Default None.
+        model_filter (str): Fuzzy model name match (e.g. "Claude Sonnet 4.6"). Default None.
+        quota_type_filter (str): "RPM", "TPM", or "TPD". Default None.
+
+    Example:
+        query_quotas("~/bedrock_cache", model_filter="Claude Sonnet 4.6", quota_type_filter="RPM")
+
+    Returns: list of quota dicts, or empty list if cache file not found.
+
+    --- Detailed Documentation ---
+
+    Works in sandbox (no boto3 needed).
 
     Args:
         cache_dir: Directory containing bedrock_quotas.json
@@ -4536,7 +4759,7 @@ def query_quotas(cache_dir, region_filter=None, model_filter=None, quota_type_fi
     if region_filter:
         results = [q for q in results if q.get("region") == region_filter]
     if model_filter:
-        results = [q for q in results if fuzzy_match(model_filter, q.get("quota_name", ""))]
+        results = [q for q in results if _fuzzy_match(model_filter, q.get("quota_name", ""))]
     if quota_type_filter:
         results = [q for q in results if q.get("quota_type") == quota_type_filter]
     if inference_type_filter:
@@ -4590,6 +4813,10 @@ def main():
                 quota_regions = [r.strip() for r in args.quota_regions.split(",") if r.strip()]
             refresh_quotas(cache_dir, regions=quota_regions)
         return
+    if not args.region:
+        if args.model or args.provider or args.include_agentcore:
+            parser.error("--region is required for queries (e.g., --region us-west-2)")
+        return
     model_results = query_model_pricing(args.cache_dir, args.region, args.provider, args.model)
     agentcore_results = []
     if args.include_agentcore:
@@ -4600,9 +4827,9 @@ def main():
             output["agentcore_pricing"] = agentcore_results
         print(json.dumps(output, indent=2))
     else:
-        md = generate_model_markdown(model_results)
+        md = _generate_model_markdown(model_results)
         if args.include_agentcore:
-            md += generate_agentcore_markdown(agentcore_results)
+            md += _generate_agentcore_markdown(agentcore_results)
         print(md)
     print(f"\nTotal model price entries: {len(model_results)}", file=sys.stderr)
     if agentcore_results:
@@ -4643,7 +4870,22 @@ def calculate_evaluation_cost(
     # Report output directory (optional)
     output_dir=None,
 ):
-    """Calculate AgentCore Evaluations cost (LLM-as-a-Judge).
+    """Calculate AgentCore Evaluations cost (built-in + custom LLM-as-a-Judge).
+
+    Args (required):
+        questions_per_month (int): Total questions per month.
+        sessions_per_month (int): Total sessions per month.
+    Args (optional):
+        sampling_rate (float): Fraction of sessions evaluated. Default 0.10.
+        num_builtin_evaluators (int): Built-in evaluators per question. Default 3.
+        num_custom_llm_evaluators (int): Custom LLM evaluators. Default 0.
+
+    Example:
+        calculate_evaluation_cost(1_000_000, 200_000)
+
+    Returns: dict with total_monthly, total_annual, builtin/custom breakdowns, and explanation.
+
+    --- Detailed Documentation ---
 
     Args:
         questions_per_month (int): Total questions/month.
@@ -4672,8 +4914,8 @@ def calculate_evaluation_cost(
         raise ValueError(f"tools_invoked ({tools_invoked}) cannot exceed tools_passed_to_agent ({tools_passed_to_agent})")
 
     # Resolve defaults from config (explicit values passed by caller always win)
-    sampling_rate = resolve_setting("agentcore_defaults", "eval_sampling_rate", sampling_rate)
-    num_builtin_evaluators = resolve_setting("agentcore_defaults", "eval_builtin_evaluators", num_builtin_evaluators)
+    sampling_rate = _resolve_setting("agentcore_defaults", "eval_sampling_rate", sampling_rate)
+    num_builtin_evaluators = _resolve_setting("agentcore_defaults", "eval_builtin_evaluators", num_builtin_evaluators)
 
     # Derive evaluated volume
     evaluated_sessions = sessions_per_month * sampling_rate
@@ -4810,14 +5052,28 @@ def calculate_evaluation_cost(
         return result
 
     # Auto-cleanup if configured
-    if resolve_setting("reports", "auto_cleanup"):
+    if _resolve_setting("reports", "auto_cleanup"):
         _cleanup_old_reports()
 
     return _build_evaluation_summary(result, written_path)
 
 
 def build_capacity_profile_from_tokens(token_result, sessions_per_month, model_name=None, sub_agents=None):
-    """Build a capacity_profile dict from calculate_compounded_tokens_for_agent() output.
+    """Build a capacity_profile dict from token calculation output for capacity checks.
+
+    Args (required):
+        token_result (dict): Output from calculate_compounded_tokens_for_agent(detail_level="full").
+        sessions_per_month (int): Monthly session volume.
+    Args (optional):
+        model_name (str|None): Model name for quota lookup. Default None.
+        sub_agents (list|None): Sub-agent profiles list. Default None.
+
+    Example:
+        build_capacity_profile_from_tokens(token_result, 10000, model_name="Claude Sonnet 4.6")
+
+    Returns: dict with sessions_per_month, main_agent, sub_agents keys for check_capacity_fit().
+
+    --- Detailed Documentation ---
 
     Use this when computing capacity directly (without going through the cost function).
     The cost function already outputs capacity_profile — use that instead if available.
@@ -4894,7 +5150,19 @@ def build_capacity_profile_from_tokens(token_result, sessions_per_month, model_n
 
 
 def get_tier_limits_for_model(cache_dir, model_name, region):
-    """Look up RPM/TPM/TPD quota limits for a model from bedrock_quotas.json.
+    """Look up the highest RPM/TPM/TPD quota limits for a model in a given region.
+
+    Args (required):
+        cache_dir (str): Path to cache directory (e.g., ~/bedrock_cache).
+        model_name (str): Model name to search for (e.g., "Claude Sonnet 4.6").
+        region (str): AWS region (e.g., "us-west-2").
+
+    Example:
+        get_tier_limits_for_model("~/bedrock_cache", "Claude Sonnet 4.6", "us-west-2")
+
+    Returns: dict {"rpm_high": N, "tpm_high": N, "tpd_high": N} or None if not found.
+
+    --- Detailed Documentation ---
 
     Queries all quota types and returns the highest limit for each (across inference types).
     Returns None if no quotas are found for the model/region.
@@ -4933,7 +5201,18 @@ def get_tier_limits_for_model(cache_dir, model_name, region):
 
 
 def aggregate_capacity_by_model(capacity_profile):
-    """Aggregate capacity_profile entries by model for per-model fit checks.
+    """Aggregate multi-agent capacity into per-model load profiles for quota checks.
+
+    Args (required):
+        capacity_profile (dict): From calculate_agent_session_compounded_cost() or
+            build_capacity_profile_from_tokens().
+
+    Example:
+        aggregate_capacity_by_model(cost_result["capacity_profile"])
+
+    Returns: dict keyed by model_name, each with capacity_profile, questions_per_month, components.
+
+    --- Detailed Documentation ---
 
     When main agent and sub-agents use the same model, their RPM/TPM/TPD load
     must be summed before checking against that model's shared quota.
@@ -5066,6 +5345,21 @@ def check_capacity_fit(
 ):
     """Check if a workload fits within Bedrock RPM/TPM/TPD quota limits.
 
+    Args (required):
+        capacity_profile (dict): Token profile from cost or token calculation output.
+        questions_per_month (int): Total questions per month hitting this model.
+    Args (optional):
+        tier_limits (dict|None): {"rpm_high": N, "tpm_high": N}. Default None.
+        peak_to_avg_ratio (float): Peak traffic multiplier. Default 3.0.
+        output_burndown_rate (int): Output TPM multiplier (5 for Claude 3.7+). Default 1.
+
+    Example:
+        check_capacity_fit(capacity_profile, 1_000_000, tier_limits={"rpm_high": 1000, "tpm_high": 400000})
+
+    Returns: dict with fits (bool), utilization_pct, recommendations, and explanation.
+
+    --- Detailed Documentation ---
+
     Uses a capacity_profile (from calculate_agent_session_compounded_cost() or
     calculate_compounded_tokens_for_agent()) as the source of token math.
     Does NOT compute tokens internally — all token values come from the profile.
@@ -5094,10 +5388,10 @@ def check_capacity_fit(
         explanation (dict).
     """
     # Resolve defaults from config (explicit values passed by caller always win)
-    peak_to_avg_ratio = resolve_setting("capacity", "peak_to_avg_ratio", peak_to_avg_ratio)
-    active_hours_per_day = resolve_setting("capacity", "active_hours_per_day", active_hours_per_day)
-    active_days_per_month = resolve_setting("capacity", "active_days_per_month", active_days_per_month)
-    max_tokens_setting = resolve_setting("capacity", "max_tokens_setting", max_tokens_setting)
+    peak_to_avg_ratio = _resolve_setting("capacity", "peak_to_avg_ratio", peak_to_avg_ratio)
+    active_hours_per_day = _resolve_setting("capacity", "active_hours_per_day", active_hours_per_day)
+    active_days_per_month = _resolve_setting("capacity", "active_days_per_month", active_days_per_month)
+    max_tokens_setting = _resolve_setting("capacity", "max_tokens_setting", max_tokens_setting)
 
     # Input validation
     if questions_per_month <= 0:
@@ -5340,7 +5634,28 @@ def calculate_agentcore_cost(
     # Report output directory (optional)
     output_dir=None,
 ):
-    """Calculate AgentCore component costs (Runtime, Gateway, Memory, BrowserTool, CodeInterpreter).
+    """Calculate AgentCore infrastructure costs (Runtime, Gateway, Memory, BrowserTool, CodeInterpreter).
+
+    Args (required):
+        runtime_vcpu_price_hr (float): Runtime vCPU price per hour.
+        runtime_mem_price_hr (float): Runtime memory price per hour.
+        gateway_invocation_price (float): Gateway per-invocation price.
+        gateway_search_price (float): Gateway per-search price.
+        gateway_indexing_price (float): Gateway per-index price.
+        stm_event_price (float): Short-term memory per-event price.
+        ltm_storage_price (float): Long-term memory per-record price.
+        ltm_retrieval_price (float): Long-term memory per-retrieval price.
+    Args (optional):
+        questions_per_month (int): Total questions. Default 1,000,000.
+        tools_invoked (int): Tool calls per question. Default 5.
+        io_wait_pct (float): I/O wait fraction. Default 0.70.
+
+    Example:
+        calculate_agentcore_cost(0.05, 0.005, 0.001, 0.0005, 0.01, 0.0001, 0.0002, 0.0003)
+
+    Returns: dict with total_monthly, total_annual, runtime/gateway/memory breakdowns, and explanation.
+
+    --- Detailed Documentation ---
 
     Does NOT include Evaluations — use calculate_evaluation_cost() separately.
 
@@ -5365,14 +5680,14 @@ def calculate_agentcore_cost(
             grand_total, cost_composition.
     """
     # Resolve defaults from config (explicit values passed by caller always win)
-    num_vcpus = resolve_setting("agentcore_defaults", "num_vcpus", num_vcpus)
-    peak_memory_gb = resolve_setting("agentcore_defaults", "peak_memory_gb", peak_memory_gb)
-    io_wait_pct = resolve_setting("agentcore_defaults", "io_wait_pct", io_wait_pct)
-    idle_time_between_questions_s = resolve_setting("agentcore_defaults", "idle_time_between_questions_s", idle_time_between_questions_s)
-    stm_events_per_question = resolve_setting("agentcore_defaults", "stm_events_per_question", stm_events_per_question)
-    ltm_records_per_session = resolve_setting("agentcore_defaults", "ltm_records_per_session", ltm_records_per_session)
-    ltm_retrievals_per_question = resolve_setting("agentcore_defaults", "ltm_retrievals_per_question", ltm_retrievals_per_question)
-    tools_indexed = resolve_setting("agentcore_defaults", "tools_indexed", tools_indexed)
+    num_vcpus = _resolve_setting("agentcore_defaults", "num_vcpus", num_vcpus)
+    peak_memory_gb = _resolve_setting("agentcore_defaults", "peak_memory_gb", peak_memory_gb)
+    io_wait_pct = _resolve_setting("agentcore_defaults", "io_wait_pct", io_wait_pct)
+    idle_time_between_questions_s = _resolve_setting("agentcore_defaults", "idle_time_between_questions_s", idle_time_between_questions_s)
+    stm_events_per_question = _resolve_setting("agentcore_defaults", "stm_events_per_question", stm_events_per_question)
+    ltm_records_per_session = _resolve_setting("agentcore_defaults", "ltm_records_per_session", ltm_records_per_session)
+    ltm_retrievals_per_question = _resolve_setting("agentcore_defaults", "ltm_retrievals_per_question", ltm_retrievals_per_question)
+    tools_indexed = _resolve_setting("agentcore_defaults", "tools_indexed", tools_indexed)
 
     # Input validation
     if questions_per_month <= 0:
@@ -5561,7 +5876,7 @@ def calculate_agentcore_cost(
         return result
 
     # Auto-cleanup if configured
-    if resolve_setting("reports", "auto_cleanup"):
+    if _resolve_setting("reports", "auto_cleanup"):
         _cleanup_old_reports()
 
     return _build_agentcore_summary(result, written_path)
@@ -5588,7 +5903,21 @@ def calculate_business_value(
     # Report output directory (optional)
     output_dir=None,
 ):
-    """Calculate business value of an AI agent across up to three dimensions.
+    """Calculate business value and ROI of an AI agent (time savings, churn, sales).
+
+    Args (required):
+        sessions_per_month (int): Agent sessions per month.
+    Args (optional):
+        agent_cost_monthly (float): Total agent cost $/month. Default 0.
+        total_customers (int): Customer base for churn dim. Default 0 (skip).
+        annual_sales_revenue (float): Annual sales for sales dim. Default 0 (skip).
+
+    Example:
+        calculate_business_value(10000, agent_cost_monthly=5000)
+
+    Returns: dict with summary (roi_pct, net_value, payback_days), per-tier breakdowns, explanation.
+
+    --- Detailed Documentation ---
 
     Dim 1 (always): Time savings → productivity or cost savings (3 tiers).
     Dim 2 (if total_customers > 0): Customer churn reduction.
@@ -5616,17 +5945,17 @@ def calculate_business_value(
             dim3_sales_increase (conditional), summary.
     """
     # Resolve defaults from config (explicit values passed by caller always win)
-    time_without_ai_min = resolve_setting("business_value_defaults", "time_without_ai_min", time_without_ai_min)
-    time_with_ai_min = resolve_setting("business_value_defaults", "time_with_ai_min", time_with_ai_min)
-    human_cost_per_hour = resolve_setting("business_value_defaults", "human_cost_per_hour", human_cost_per_hour)
-    revenue_per_hour = resolve_setting("business_value_defaults", "revenue_per_hour", revenue_per_hour)
-    churn_without_ai_pct = resolve_setting("business_value_defaults", "churn_without_ai_pct", churn_without_ai_pct)
-    churn_with_ai_pct = resolve_setting("business_value_defaults", "churn_with_ai_pct", churn_with_ai_pct)
-    sales_increase_pct = resolve_setting("business_value_defaults", "sales_increase_pct", sales_increase_pct)
+    time_without_ai_min = _resolve_setting("business_value_defaults", "time_without_ai_min", time_without_ai_min)
+    time_with_ai_min = _resolve_setting("business_value_defaults", "time_with_ai_min", time_with_ai_min)
+    human_cost_per_hour = _resolve_setting("business_value_defaults", "human_cost_per_hour", human_cost_per_hour)
+    revenue_per_hour = _resolve_setting("business_value_defaults", "revenue_per_hour", revenue_per_hour)
+    churn_without_ai_pct = _resolve_setting("business_value_defaults", "churn_without_ai_pct", churn_without_ai_pct)
+    churn_with_ai_pct = _resolve_setting("business_value_defaults", "churn_with_ai_pct", churn_with_ai_pct)
+    sales_increase_pct = _resolve_setting("business_value_defaults", "sales_increase_pct", sales_increase_pct)
 
     # Resolve effectiveness/efficiency from config (controls the Moderate tier)
-    moderate_effectiveness = resolve_setting("business_value_defaults", "agent_effectiveness_pct")
-    moderate_efficiency = resolve_setting("business_value_defaults", "efficiency_factor_pct")
+    moderate_effectiveness = _resolve_setting("business_value_defaults", "agent_effectiveness_pct")
+    moderate_efficiency = _resolve_setting("business_value_defaults", "efficiency_factor_pct")
 
     time_saved_min = time_without_ai_min - time_with_ai_min
 
@@ -5805,7 +6134,7 @@ def calculate_business_value(
         return result
 
     # Auto-cleanup if configured
-    if resolve_setting("reports", "auto_cleanup"):
+    if _resolve_setting("reports", "auto_cleanup"):
         _cleanup_old_reports()
 
     return _build_bva_summary(result, written_path)
