@@ -239,8 +239,8 @@ def test_list_models():
         _assert(isinstance(model, str),
                 f"list_models returns strings: {model}")
 
-    # FileNotFoundError when index missing
-    tmp_dir = tempfile.mkdtemp(prefix="test_no_index_")
+    # FileNotFoundError when NO cache files exist at all
+    tmp_dir = tempfile.mkdtemp(prefix="test_no_cache_")
     try:
         raised = False
         try:
@@ -248,9 +248,26 @@ def test_list_models():
         except FileNotFoundError:
             raised = True
         _assert(raised,
-                "list_models raises FileNotFoundError when index missing")
+                "list_models raises FileNotFoundError when no cache files exist")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # Auto-generates index when cache files exist but index doesn't
+    tmp_dir2 = tempfile.mkdtemp(prefix="test_auto_index_")
+    try:
+        cache_dir = os.path.expanduser("~/bedrock_cache")
+        for fname in ["bedrock_pricing.json", "bedrock_pricing_3p.json", "bedrock_pricing_service.json"]:
+            src = os.path.join(cache_dir, fname)
+            if os.path.exists(src):
+                os.symlink(src, os.path.join(tmp_dir2, fname))
+        # No index file yet — list_models should auto-generate it
+        result = list_models(tmp_dir2, "us-west-2", "Sonnet")
+        _assert(len(result) >= 5,
+                "list_models auto-generates index when cache exists but index doesn't")
+        _assert(os.path.exists(os.path.join(tmp_dir2, MODEL_INDEX_FILE)),
+                "auto-generated index file exists after list_models call")
+    finally:
+        shutil.rmtree(tmp_dir2, ignore_errors=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

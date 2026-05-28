@@ -1860,10 +1860,18 @@ def list_models(cache_dir, region, family):
     index_path = os.path.join(cache_dir, MODEL_INDEX_FILE)
 
     if not os.path.exists(index_path):
-        raise FileNotFoundError(
-            f"Model index not found at {index_path}. "
-            f"Run --refresh to generate it."
+        # Auto-generate if cache files exist but index doesn't (upgrade path)
+        cache_files_exist = any(
+            os.path.exists(os.path.join(cache_dir, f))
+            for f in CACHE_FILES.values() if f
         )
+        if cache_files_exist:
+            _generate_model_index(cache_dir)
+        else:
+            raise FileNotFoundError(
+                f"No pricing cache found at {cache_dir}. "
+                f"Run --refresh to fetch pricing data."
+            )
 
     with open(index_path, "r") as f:
         index = json.load(f)
