@@ -340,14 +340,17 @@ The full report is written to the file at `file_path`. It contains all sections 
 
 #### Capacity planning from the summary
 
-The compact summary includes `capacity_profile` — pass it directly to `check_capacity_fit()`:
+The compact summary includes `capacity_profile` — pass it directly to `check_capacity_fit()`. Always pass `output_dir` when using a session directory:
 
 ```python
 cap_result = check_capacity_fit(
     capacity_profile=result["capacity_profile"]["main_agent"],
     questions_per_month=50000,
     tier_limits=tier_limits,
+    output_dir=session_dir,  # writes capacity.md alongside bedrock-pricing.md
 )
+# Returns compact: fits, utilization %, recommendations, report_file
+# Full detail (calculations, optimization checklist) in the report file
 ```
 
 **Rules:**

@@ -4937,8 +4937,6 @@ def _generate_model_index(cache_dir):
 
     Called automatically after refresh_cache() completes.
     """
-    from collections import defaultdict
-
     models_by_region = defaultdict(set)
 
     service_codes_to_scan = ["AmazonBedrock", "AmazonBedrockService", "AmazonBedrockFoundationModels"]
@@ -5664,8 +5662,6 @@ def aggregate_capacity_by_model(capacity_profile):
             "sessions_per_month" (int): Sessions per month.
             "components" (list): Which agents contribute to this model's load.
     """
-    from collections import defaultdict
-
     main = capacity_profile["main_agent"]
     sub_agents = capacity_profile.get("sub_agents", [])
     main_model = main.get("model_name") or "main_agent_model"
