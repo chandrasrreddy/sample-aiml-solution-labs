@@ -15,7 +15,9 @@ description: >
 ## Critical Rules
 
 - **ALWAYS ask for region first.** If the user has not specified a region, ask which region they want before doing anything else. There is no default region — never assume one.
-- **NEVER guess model names.** Use `get_model_prices()` (preferred — resolves + extracts in one call) or `query_model_pricing()` → `extract_bedrock_model_prices()` (for tier browsing). Only present model names returned by the function — never from your own knowledge. If ambiguous, show the list and ask the user to pick.
+- **ALWAYS ask for model family.** If the user has not specified a model family (e.g., "Sonnet", "Opus", "Haiku", "Nova Pro"), ask which family they want. Never assume one.
+- **ALWAYS use `list_models()` before `get_model_prices()`.** When the user has not specified an exact model version, call `list_models(cache_dir, region, family)` first, present the available versions to the user, and let them pick. Only then call `get_model_prices()` with the exact model name they chose.
+- **NEVER guess model names or versions.** Only present model names returned by `list_models()` — never from your own knowledge. Never assume "latest" — always confirm with the user.
 - **NEVER use training data for prices.** All prices must come from the local pricing cache files at runtime.
 - **NEVER implement cost formulas manually.** Always use `calculate_agent_session_compounded_cost()`.
 - **ALWAYS use user-specified values.** If the user provides a value for any parameter, use that exact value. Default values in examples below are illustrative only — never substitute them for user-provided values.
@@ -110,30 +112,39 @@ cache_status = check_pricing_data_status()
 - `"partial"` — some files missing. Warn the user which files are absent (results may be incomplete), then proceed.
 - `"missing"` — all pricing cache files are missing. **Stop.** Tell the user to run the refresh command from the result and do not attempt queries.
 
-### 2. Resolve Model & Get Prices (preferred: one-call)
+### 2. List Available Models (REQUIRED before pricing lookup)
 
 ```python
 home = os.path.expanduser("~/bedrock_cache")
-prices = get_model_prices(home, "us-west-2", "Claude Haiku 4.5")
-# → {"input_price": 1.0, "output_price": 5.0, "cache_read_price": 0.1,
-#    "cache_write_price": 1.25, "min_cache_tokens": 4096, "model_name": "Claude Haiku 4.5"}
+models = list_models(home, "us-west-2", "Sonnet")
+# → ["Claude 3 Sonnet", "Claude 3.5 Sonnet", "Claude 3.5 Sonnet v2",
+#    "Claude 3.7 Sonnet", "Claude Sonnet 4", "Claude Sonnet 4.5", "Claude Sonnet 4.6"]
 ```
 
-- **ValueError (no match):** Tell user no models found, ask to refine.
-- **ValueError (ambiguous):** Present the matched model names from the error message, ask user to pick.
-- **Success:** Proceed to Step 4 (or Step 3 for tier comparison).
+- **Present the list to the user** and ask which model version they want.
+- **Empty list:** Tell user no models found for that family/region.
+- **FileNotFoundError:** Tell user to run `--refresh` to generate the model index.
+- **User provides exact model name upfront:** Skip this step, go directly to Step 2b.
 
-### 2b. Resolve Model (manual path — when browsing or comparing tiers)
+### 2b. Get Prices (after user picks a model)
 
 ```python
-results = query_model_pricing(home, "us-west-2", provider_filter="Anthropic", model_filter="Haiku")
-models_found = sorted(set(r["model"] for r in results))
+prices = get_model_prices(home, "us-west-2", "Claude Sonnet 4.6")
+# → {"input_price": 3.0, "output_price": 15.0, "cache_read_price": 0.3,
+#    "cache_write_price": 3.75, "min_cache_tokens": 2048, "model_name": "Claude Sonnet 4.6"}
 ```
 
-- **Multiple matches:** Present the list, ask user to pick one, then filter:
-  ```python
-  selected_results = [r for r in results if r["model"] == "Claude Haiku 4.5"]
-  ```
+- **ValueError (no match):** Tell user no pricing found, ask to refine.
+- **Success:** Proceed to Step 4 (or Step 3 for tier comparison).
+
+### 2c. Browse Tiers (when comparing all pricing tiers for a model)
+
+```python
+results = query_model_pricing(home, "us-west-2", model_filter="Claude Sonnet 4.6")
+all_prices = extract_bedrock_model_prices(results, all_tiers=True)
+```
+
+Only use this path when the user explicitly asks to compare tiers. For standard pricing lookups, use Step 2b.
 
 ### 3. Look Up Model Prices (only needed if using Step 2b)
 

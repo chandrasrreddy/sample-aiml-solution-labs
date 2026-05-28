@@ -135,6 +135,70 @@ PROVIDER_RULES = [
     (["Ray"], "Ray"),
 ]
 
+MODEL_FAMILY_RULES = [
+    (["opus"], "Opus"),
+    (["sonnet"], "Sonnet"),
+    (["haiku"], "Haiku"),
+    (["claude instant"], "Claude Instant"),
+    (["claude"], "Claude"),
+    (["nova sonic"], "Nova Sonic"),
+    (["nova canvas"], "Nova Canvas"),
+    (["nova reel"], "Nova Reel"),
+    (["nova pro"], "Nova Pro"),
+    (["nova lite"], "Nova Lite"),
+    (["nova micro"], "Nova Micro"),
+    (["nova premier"], "Nova Premier"),
+    (["nova omni"], "Nova Omni"),
+    (["nova"], "Nova"),
+    (["titan text"], "Titan Text"),
+    (["titan embed"], "Titan Embed"),
+    (["titan image"], "Titan Image"),
+    (["titan multimodal"], "Titan Multimodal"),
+    (["titan"], "Titan"),
+    (["llama 4"], "Llama 4"),
+    (["llama 3.3"], "Llama 3.3"),
+    (["llama 3.2"], "Llama 3.2"),
+    (["llama 3.1"], "Llama 3.1"),
+    (["llama 3"], "Llama 3"),
+    (["llama 2"], "Llama 2"),
+    (["llama"], "Llama"),
+    (["mistral large"], "Mistral Large"),
+    (["mistral small"], "Mistral Small"),
+    (["mixtral"], "Mixtral"),
+    (["ministral"], "Ministral"),
+    (["mistral"], "Mistral"),
+    (["command r+"], "Command R+"),
+    (["command r"], "Command R"),
+    (["command"], "Command"),
+    (["embed"], "Embed"),
+    (["jamba"], "Jamba"),
+    (["deepseek"], "DeepSeek"),
+    (["qwen"], "Qwen"),
+    (["palmyra"], "Palmyra"),
+    (["stable diffusion"], "Stable Diffusion"),
+    (["stable image"], "Stable Image"),
+    (["sdxl"], "SDXL"),
+    (["pegasus"], "Pegasus"),
+    (["marengo"], "Marengo"),
+    (["glm"], "GLM"),
+    (["gemma"], "Gemma"),
+    (["nemotron"], "Nemotron"),
+    (["phi"], "Phi"),
+    (["kimi"], "Kimi"),
+    (["minimax"], "MiniMax"),
+]
+
+MODEL_INDEX_FILE = "bedrock_model_index.json"
+
+
+def _classify_model_family(model_name):
+    """Classify a model name into its family using MODEL_FAMILY_RULES."""
+    lower = model_name.lower()
+    for keywords, family in MODEL_FAMILY_RULES:
+        if all(kw in lower for kw in keywords):
+            return family
+    return "Other"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION SYSTEM
@@ -1769,6 +1833,56 @@ def _get_min_cache_tokens(model_name):
         if pattern in model_name:
             return threshold
     return None
+
+
+def list_models(cache_dir, region, family):
+    """List available model versions for a family in a region.
+
+    Requires model family (e.g., "Sonnet", "Opus", "Haiku", "Nova Pro").
+    Returns a list of exact model name strings suitable for get_model_prices().
+
+    Args:
+        cache_dir (str): Path to cache directory (e.g., "~/bedrock_cache").
+        region (str): AWS region code (e.g., "us-west-2").
+        family (str): Model family name (e.g., "Sonnet", "Opus", "Haiku").
+
+    Example:
+        models = list_models("~/bedrock_cache", "us-west-2", "Sonnet")
+        # → ["Claude 3 Sonnet", "Claude 3.5 Sonnet", "Claude 3.5 Sonnet v2",
+        #    "Claude 3.7 Sonnet", "Claude Sonnet 4", "Claude Sonnet 4.5", "Claude Sonnet 4.6"]
+
+    Returns: list of model name strings, or empty list if family/region not found.
+
+    Raises:
+        FileNotFoundError: If model index does not exist (run --refresh).
+    """
+    cache_dir = os.path.expanduser(cache_dir)
+    index_path = os.path.join(cache_dir, MODEL_INDEX_FILE)
+
+    if not os.path.exists(index_path):
+        raise FileNotFoundError(
+            f"Model index not found at {index_path}. "
+            f"Run --refresh to generate it."
+        )
+
+    with open(index_path, "r") as f:
+        index = json.load(f)
+
+    region_data = index.get(region, {})
+    if not region_data:
+        return []
+
+    # Exact family match first
+    if family in region_data:
+        return region_data[family]
+
+    # Case-insensitive fallback
+    family_lower = family.lower()
+    for fam_key, models in region_data.items():
+        if fam_key.lower() == family_lower:
+            return models
+
+    return []
 
 
 def get_model_prices(cache_dir, region, model_name, tier="Standard", variant="Global"):
@@ -4695,6 +4809,62 @@ def _generate_agentcore_markdown(results):
     return "\n".join(lines)
 
 
+def _generate_model_index(cache_dir):
+    """Generate the model index file from existing pricing cache.
+
+    Reads all pricing JSON files and builds a lookup:
+        {region: {family: [model_name, ...]}}
+
+    Called automatically after refresh_cache() completes.
+    """
+    from collections import defaultdict
+
+    models_by_region = defaultdict(set)
+
+    service_codes_to_scan = ["AmazonBedrock", "AmazonBedrockService", "AmazonBedrockFoundationModels"]
+    for sc in service_codes_to_scan:
+        filename = CACHE_FILES.get(sc, "")
+        if not filename:
+            continue
+        filepath = os.path.join(cache_dir, filename)
+        if not os.path.exists(filepath):
+            continue
+        try:
+            with open(filepath, "r") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+
+        is_3p = (sc == "AmazonBedrockFoundationModels")
+        for raw in data.get("PriceList", []):
+            item = json.loads(raw) if isinstance(raw, str) else raw
+            attrs = item.get("product", {}).get("attributes", {})
+            region = attrs.get("regionCode", "")
+            if not region:
+                continue
+            if is_3p:
+                model = attrs.get("servicename", "").replace(" (Amazon Bedrock Edition)", "")
+            else:
+                model = attrs.get("model", "")
+            if model:
+                models_by_region[region].add(model)
+
+    # Build {region: {family: [sorted model names]}}
+    index = {}
+    for region in sorted(models_by_region.keys()):
+        families = defaultdict(list)
+        for model in sorted(models_by_region[region]):
+            family = _classify_model_family(model)
+            families[family].append(model)
+        index[region] = dict(sorted(families.items()))
+
+    index_path = os.path.join(cache_dir, MODEL_INDEX_FILE)
+    with open(index_path, "w") as f:
+        json.dump(index, f, indent=2)
+    model_count = sum(len(m) for fams in index.values() for m in fams.values())
+    print(f"  Generated model index: {len(index)} regions, {model_count} entries → {index_path}", file=sys.stderr)
+
+
 def refresh_cache(output_dir):
     try:
         import boto3
@@ -4714,6 +4884,7 @@ def refresh_cache(output_dir):
         with open(filepath, "w") as f:
             json.dump(data, f)
         print(f"  Saved {len(all_items)} entries to {filepath}", file=sys.stderr)
+    _generate_model_index(output_dir)
     print("\nCache refresh complete!", file=sys.stderr)
 
 
