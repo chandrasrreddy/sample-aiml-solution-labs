@@ -15,7 +15,7 @@ description: >
 ## Critical Rules
 
 - **ALWAYS ask for region first.** If the user has not specified a region, ask which region they want before doing anything else. There is no default region — never assume one.
-- **NEVER guess model names.** Always call `query_model_pricing()` first. Only present model names returned by the function — never from your own knowledge. If multiple models match, show the list and ask the user to pick. Only proceed when results resolve to exactly one model.
+- **NEVER guess model names.** Use `get_model_prices()` (preferred — resolves + extracts in one call) or `query_model_pricing()` → `extract_bedrock_model_prices()` (for tier browsing). Only present model names returned by the function — never from your own knowledge. If ambiguous, show the list and ask the user to pick.
 - **NEVER use training data for prices.** All prices must come from the local pricing cache files at runtime.
 - **NEVER implement cost formulas manually.** Always use `calculate_agent_session_compounded_cost()`.
 - **ALWAYS use user-specified values.** If the user provides a value for any parameter, use that exact value. Default values in examples below are illustrative only — never substitute them for user-provided values.
@@ -110,22 +110,32 @@ cache_status = check_pricing_data_status()
 - `"partial"` — some files missing. Warn the user which files are absent (results may be incomplete), then proceed.
 - `"missing"` — all pricing cache files are missing. **Stop.** Tell the user to run the refresh command from the result and do not attempt queries.
 
-### 2. Resolve Model
+### 2. Resolve Model & Get Prices (preferred: one-call)
 
 ```python
 home = os.path.expanduser("~/bedrock_cache")
-results = query_model_pricing(home, region_filter="us-west-2", provider_filter="Anthropic", model_filter="Haiku")
+prices = get_model_prices(home, "us-west-2", "Claude Haiku 4.5")
+# → {"input_price": 1.0, "output_price": 5.0, "cache_read_price": 0.1,
+#    "cache_write_price": 1.25, "min_cache_tokens": 4096, "model_name": "Claude Haiku 4.5"}
+```
+
+- **ValueError (no match):** Tell user no models found, ask to refine.
+- **ValueError (ambiguous):** Present the matched model names from the error message, ask user to pick.
+- **Success:** Proceed to Step 4 (or Step 3 for tier comparison).
+
+### 2b. Resolve Model (manual path — when browsing or comparing tiers)
+
+```python
+results = query_model_pricing(home, "us-west-2", provider_filter="Anthropic", model_filter="Haiku")
 models_found = sorted(set(r["model"] for r in results))
 ```
 
-- **0 matches:** Tell user no models found, ask to refine query.
-- **1 match:** Proceed to Step 3.
 - **Multiple matches:** Present the list, ask user to pick one, then filter:
   ```python
   selected_results = [r for r in results if r["model"] == "Claude Haiku 4.5"]
   ```
 
-### 3. Look Up Model Prices
+### 3. Look Up Model Prices (only needed if using Step 2b)
 
 With a single confirmed model, discover available tiers and extract prices:
 
@@ -175,16 +185,25 @@ Only proceed to calculation after user confirms or adjusts values.
 
 > **IMPORTANT:** The examples below use illustrative values only. Always substitute the user's actual values for any parameter they specify. Only use defaults for parameters the user has not provided.
 
-**Example — Single agent (no sub-agents):**
+**Fastest path — Single agent with defaults:**
+
+```python
+# One-liner when user provides model + region + volume
+result = estimate_cost(home, "us-west-2", "Claude Sonnet 4", 10000)
+
+# With overrides:
+result = estimate_cost(home, "us-west-2", "Claude Sonnet 4", 10000,
+                       questions_per_agent_session=3, system_prompt_tokens=4000)
+```
+
+**Standard path — Single agent (no sub-agents):**
 
 ```python
 # EXAMPLE ONLY — replace values with user-specified inputs
+prices = get_model_prices(home, "us-west-2", "Claude Sonnet 4")
 result = calculate_agent_session_compounded_cost(
     main_agent_config={
-        "input_price": prices["input"],
-        "output_price": prices["output"],
-        "cache_read_price": prices["cache_read"],
-        "cache_write_price": prices["cache_write"],
+        **prices,
         "agent_sessions_per_month": 10000,
         "questions_per_agent_session": 5,
         "input_tokens": 100,
@@ -203,22 +222,17 @@ result = calculate_agent_session_compounded_cost(
 
 ```python
 # EXAMPLE ONLY — replace values with user-specified inputs
+main_prices = get_model_prices(home, "us-west-2", "Claude Sonnet 4")
+rag_prices = get_model_prices(home, "us-west-2", "Nova 2.0 Lite")
+research_prices = get_model_prices(home, "us-west-2", "Claude Haiku 4.5")
+
 result = calculate_agent_session_compounded_cost(
     main_agent_config={
-        "input_price": prices["input"],
-        "output_price": prices["output"],
-        "cache_read_price": prices["cache_read"],
-        "cache_write_price": prices["cache_write"],
+        **main_prices,
         "agent_sessions_per_month": 10000,
         "questions_per_agent_session": 5,
-        "input_tokens": 100,
-        "output_tokens": 150,
-        "system_prompt_tokens": 2000,
         "tools_passed_to_agent": 10,
-        "tool_spec_tokens": 100,
         "tools_invoked": 5,
-        "tool_call_tokens": 100,
-        "tool_result_tokens": 100,
     },
     subagents=[
         {
@@ -228,12 +242,7 @@ result = calculate_agent_session_compounded_cost(
                 "rag_chunk_size": 300,
                 "output_tokens": 300,
             },
-            "model_prices": {
-                "input_price": 1.0,
-                "output_price": 5.0,
-                "cache_read_price": 0.1,   # include if model supports caching
-                "cache_write_price": 1.25, # include if model supports caching
-            },
+            "model_prices": rag_prices,  # includes cache prices + min_cache_tokens automatically
             "questions_invoked": 3,
         },
         {
@@ -243,7 +252,7 @@ result = calculate_agent_session_compounded_cost(
                 "fetch_probability": 0.5,
                 "output_tokens": 1000,
             },
-            "model_prices": {"input_price": 1.0, "output_price": 5.0},  # no caching if model doesn't support it
+            "model_prices": research_prices,
             "questions_invoked": 0,
         },
     ],

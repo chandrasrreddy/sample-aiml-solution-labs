@@ -17,29 +17,26 @@ API QUICK REFERENCE — 11 Common Patterns
 
 All patterns assume: cache_dir = "~/bedrock_cache", region is always required.
 
-Pattern 1 — Single model cost:
-    results = query_model_pricing(cache_dir, "us-west-2", model_filter="Claude Sonnet 4")
-    prices = extract_bedrock_model_prices(results)
-    cost = calculate_agent_session_compounded_cost(
-        main_agent_config={"input_price": prices["input"], "output_price": prices["output"],
-            "cache_read_price": prices["cache_read"], "cache_write_price": prices["cache_write"],
-            "agent_sessions_per_month": 10000})
+FASTEST PATH (most common):
+    cost = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4", 10000)
 
-Pattern 2 — Compare models (repeat pattern 1 per model, same workload config):
+Pattern 1 — Single model cost (with control over params):
+    prices = get_model_prices(cache_dir, "us-west-2", "Claude Sonnet 4")
+    cost = calculate_agent_session_compounded_cost(
+        main_agent_config={**prices, "agent_sessions_per_month": 10000})
+
+Pattern 2 — Compare models:
     for model in ["Claude Sonnet 4", "Claude Haiku 4.5", "Nova 2.0 Lite"]:
-        results = query_model_pricing(cache_dir, "us-west-2", model_filter=model)
-        prices = extract_bedrock_model_prices(results)
-        cost = calculate_agent_session_compounded_cost(main_agent_config={...prices, ...config})
+        cost = estimate_cost(cache_dir, "us-west-2", model, 10000)
 
 Pattern 3 — Compare tiers (Standard vs Batch vs Priority):
     results = query_model_pricing(cache_dir, "us-west-2", model_filter="Claude Sonnet 4")
     all_prices = extract_bedrock_model_prices(results, all_tiers=True)
-    # all_prices = {"Standard Global": {...}, "Batch Global": {...}, "Priority Global": {...}}
+    # → {"Standard Global": {...}, "Batch Global": {...}, "Priority Global": {...}}
 
 Pattern 4 — Compare regions:
     for region in ["us-west-2", "eu-west-1", "ap-northeast-1"]:
-        results = query_model_pricing(cache_dir, region, model_filter="Claude Sonnet 4")
-        prices = extract_bedrock_model_prices(results)
+        cost = estimate_cost(cache_dir, region, "Claude Sonnet 4", 10000)
 
 Pattern 5 — Token-only (no prices needed):
     tokens = calculate_compounded_tokens_for_agent(questions_per_agent_session=5, tools_invoked=3)
@@ -47,32 +44,37 @@ Pattern 5 — Token-only (no prices needed):
     research_tokens = calculate_research_subagent_tokens(n_research_iterations=4)
 
 Pattern 6 — Cost → Capacity fit:
-    cost = calculate_agent_session_compounded_cost(main_agent_config={...})
-    # cost["capacity_profile"]["main_agent"] is the per-model flat profile
+    cost = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4", 10000)
     fit = check_capacity_fit(cost["capacity_profile"]["main_agent"], questions_per_month=1000000)
 
 Pattern 7 — Cost → Business value:
-    cost = calculate_agent_session_compounded_cost(main_agent_config={...})
-    bva = calculate_business_value(sessions_per_month=10000, agent_cost_monthly=cost["monthly_total"])
+    cost = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4", 10000)
+    bva = calculate_business_value(10000, agent_cost_monthly=cost["monthly_total"])
 
 Pattern 8 — AgentCore infrastructure costs:
     ac_prices = query_agentcore_pricing(cache_dir, "us-west-2")
     ac_cost = calculate_agentcore_cost(runtime_vcpu_price_hr=..., ...)
 
-Pattern 9 — What-if / sensitivity (call twice, change one param):
-    cost_a = calculate_agent_session_compounded_cost({...system_prompt_tokens: 2000...})
-    cost_b = calculate_agent_session_compounded_cost({...system_prompt_tokens: 5000...})
+Pattern 9 — What-if / sensitivity (change one param):
+    cost_a = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4", 10000, system_prompt_tokens=2000)
+    cost_b = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4", 10000, system_prompt_tokens=5000)
 
 Pattern 10 — Blended cost (model routing):
-    cost_complex = calculate_agent_session_compounded_cost({...sonnet prices...})
-    cost_simple = calculate_agent_session_compounded_cost({...haiku prices...})
+    cost_complex = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4", 10000)
+    cost_simple = estimate_cost(cache_dir, "us-west-2", "Claude Haiku 4.5", 10000)
     blended = cost_complex["session_total"] * 0.15 + cost_simple["session_total"] * 0.85
 
 Pattern 11 — Full stack (Bedrock + AgentCore + Capacity + Business Value):
-    cost = calculate_agent_session_compounded_cost(main_agent_config={...})
+    cost = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4", 10000)
     ac_cost = calculate_agentcore_cost(...)
-    fit = check_capacity_fit(cost["capacity_profile"], questions_per_month)
-    bva = calculate_business_value(sessions_per_month, agent_cost_monthly=cost["monthly_total"] + ac_cost["total_monthly"])
+    fit = check_capacity_fit(cost["capacity_profile"]["main_agent"], questions_per_month=10000*5)
+    bva = calculate_business_value(10000, agent_cost_monthly=cost["monthly_total"] + ac_cost["total_monthly"])
+
+Sub-agent prices (for multi-agent):
+    prices = get_model_prices(cache_dir, "us-west-2", "Nova 2.0 Lite")
+    # → {"input_price": 0.33, "output_price": 2.75, "cache_read_price": 0.0825,
+    #    "cache_write_price": 0.0, "min_cache_tokens": 1024, "model_name": "Nova 2.0 Lite"}
+    # Pass directly as sub-agent model_prices (keys already match)
 
 ═══════════════════════════════════════════════════════════════════════════════
 """
@@ -1743,6 +1745,148 @@ def extract_bedrock_model_prices(results, tier="Standard", variant="Global", all
         # Single tier+variant extraction (backward compatible)
         return _extract_for_tier_variant(results, tier, variant, include_multimodal)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONVENIENCE LAYER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Minimum cache token thresholds per model family.
+# Used by get_model_prices() to populate min_cache_tokens automatically.
+# Models not listed here default to None (no caching applied).
+_MODEL_CACHE_THRESHOLDS = {
+    "Nova": 1024,
+    "Sonnet": 2048,
+    "Opus": 2048,
+    "Haiku": 4096,
+}
+
+
+def _get_min_cache_tokens(model_name):
+    """Look up the minimum cache token threshold for a model name."""
+    if not model_name:
+        return None
+    for pattern, threshold in _MODEL_CACHE_THRESHOLDS.items():
+        if pattern in model_name:
+            return threshold
+    return None
+
+
+def get_model_prices(cache_dir, region, model_name, tier="Standard", variant="Global"):
+    """One-call price lookup: model name → ready-to-use price dict.
+
+    Returns keys matching main_agent_config and sub-agent model_prices contracts
+    directly — no manual key renaming needed.
+
+    Args (required):
+        cache_dir (str): Path to cache directory (e.g., "~/bedrock_cache").
+        region (str): AWS region code (e.g., "us-west-2").
+        model_name (str): Exact or fuzzy model name (e.g., "Claude Sonnet 4").
+    Args (optional):
+        tier (str): "Standard", "Batch", "Priority", "Flex". Default "Standard".
+        variant (str): "Global" or "Regional". Default "Global".
+
+    Example:
+        prices = get_model_prices("~/bedrock_cache", "us-west-2", "Claude Sonnet 4")
+        # → {"input_price": 3.0, "output_price": 15.0, "cache_read_price": 0.3,
+        #    "cache_write_price": 3.75, "min_cache_tokens": 2048}
+
+    Returns: dict with input_price, output_price, cache_read_price (or None),
+        cache_write_price (or None), min_cache_tokens (or None).
+
+    Raises:
+        ValueError: If no model found, or multiple models match (ambiguous).
+    """
+    cache_dir = os.path.expanduser(cache_dir)
+    results = query_model_pricing(cache_dir, region, model_filter=model_name)
+
+    if not results:
+        raise ValueError(
+            f"No pricing found for '{model_name}' in {region}. "
+            f"Check spelling or run --refresh to update the cache."
+        )
+
+    models_found = sorted(set(r["model"] for r in results))
+    if len(models_found) > 1:
+        # Prefer exact match if one exists (e.g., "Claude Sonnet 4" shouldn't match "Claude Sonnet 4.5")
+        exact = [m for m in models_found if m.lower() == model_name.lower()]
+        if len(exact) == 1:
+            models_found = exact
+            results = [r for r in results if r["model"] == exact[0]]
+        else:
+            raise ValueError(
+                f"Ambiguous: '{model_name}' matched {len(models_found)} models: {models_found}. "
+                f"Use a more specific name (e.g., '{models_found[0]}')."
+            )
+
+    prices = extract_bedrock_model_prices(results, tier=tier, variant=variant)
+
+    # Fall back to alternate variant if preferred variant not available
+    if prices.get("input") is None:
+        alt_variant = "Regional" if variant == "Global" else "Global"
+        prices = extract_bedrock_model_prices(results, tier=tier, variant=alt_variant)
+
+    if prices.get("input") is None:
+        raise ValueError(
+            f"No {tier} prices for '{models_found[0]}' in {region}. "
+            f"Try extract_bedrock_model_prices(results, all_tiers=True) to see available tiers."
+        )
+
+    resolved_name = models_found[0]
+    min_cache = _get_min_cache_tokens(resolved_name)
+
+    cache_read = prices.get("cache_read")
+    cache_write = prices.get("cache_write")
+
+    # If cache_read exists but cache_write is None, the model has free writes (e.g., Nova)
+    if cache_read is not None and cache_write is None:
+        cache_write = 0.0
+
+    return {
+        "input_price": prices["input"],
+        "output_price": prices["output"],
+        "cache_read_price": cache_read,
+        "cache_write_price": cache_write,
+        "min_cache_tokens": min_cache,
+        "model_name": resolved_name,
+    }
+
+
+def estimate_cost(cache_dir, region, model_name, sessions_per_month, **overrides):
+    """End-to-end: model name → monthly cost estimate in one call.
+
+    Combines get_model_prices() + calculate_agent_session_compounded_cost().
+    Pass any main_agent_config key as a keyword argument to override defaults.
+
+    Args (required):
+        cache_dir (str): Path to cache directory (e.g., "~/bedrock_cache").
+        region (str): AWS region code (e.g., "us-west-2").
+        model_name (str): Model name (e.g., "Claude Sonnet 4").
+        sessions_per_month (int): Monthly session volume.
+
+    Example:
+        cost = estimate_cost("~/bedrock_cache", "us-west-2", "Claude Sonnet 4", 10000)
+        # cost["monthly_total"] → 297.90
+
+        # With overrides:
+        cost = estimate_cost("~/bedrock_cache", "us-west-2", "Claude Sonnet 4", 10000,
+                             questions_per_agent_session=3, system_prompt_tokens=4000)
+
+    Returns: Same as calculate_agent_session_compounded_cost() — dict with
+        session_total, monthly_total, annual_total, savings_pct, file_path, etc.
+    """
+    prices = get_model_prices(cache_dir, region, model_name)
+
+    main_agent_config = {
+        "input_price": prices["input_price"],
+        "output_price": prices["output_price"],
+        "cache_read_price": prices["cache_read_price"],
+        "cache_write_price": prices["cache_write_price"],
+        "agent_sessions_per_month": sessions_per_month,
+        "model_name": prices["model_name"],
+    }
+    main_agent_config.update(overrides)
+
+    return calculate_agent_session_compounded_cost(main_agent_config=main_agent_config)
 
 
 def query_agentcore_pricing(cache_dir, region_filter):
@@ -3650,7 +3794,7 @@ def calculate_agent_session_compounded_cost(
 
     # ── Step 3: Calculate main agent cost ──
     # Remove keys that aren't parameters of _calculate_main_agent_compounded_cost
-    _excluded_keys = {"detail_level", "model_name"}
+    _excluded_keys = {"detail_level", "model_name", "min_cache_tokens"}
     cost_params = {k: v for k, v in adjusted_config.items() if k not in _excluded_keys}
     cost_params["detail_level"] = "full"  # always need full detail internally
     main_cost_result = _calculate_main_agent_compounded_cost(**cost_params)
