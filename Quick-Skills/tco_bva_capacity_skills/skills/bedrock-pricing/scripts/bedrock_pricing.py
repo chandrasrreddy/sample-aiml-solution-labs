@@ -139,10 +139,9 @@ PROVIDER_RULES = [
 # Unrecognized models fall into "Other" silently. Consider auto-discovering families from
 # model name patterns at refresh time instead of maintaining a hardcoded list.
 #
-# TODO: Rule ordering is fragile — substring matching means "4" matches "3.4".
-# More specific rules (longer version strings) MUST come before shorter ones.
-# E.g., ("llama", "3.4") must precede ("llama", "4") or "Llama 3.4" misclassifies.
-# Consider word-boundary matching to eliminate this ordering dependency.
+# Matching uses exact token match (split on spaces/hyphens), so rule ordering does NOT
+# matter for version numbers ("4" won't match "3.4" since they're different tokens).
+# Keywords must match tokens exactly as they appear in model names (e.g., "qwen3" not "qwen").
 MODEL_FAMILY_RULES = [
     (["opus"], "Opus"),
     (["sonnet"], "Sonnet"),
@@ -181,7 +180,7 @@ MODEL_FAMILY_RULES = [
     (["embed"], "Embed"),
     (["jamba"], "Jamba"),
     (["deepseek"], "DeepSeek"),
-    (["qwen"], "Qwen"),
+    (["qwen3"], "Qwen"),
     (["palmyra"], "Palmyra"),
     (["stable", "diffusion"], "Stable Diffusion"),
     (["stable", "image"], "Stable Image"),
@@ -200,10 +199,14 @@ MODEL_INDEX_FILE = "bedrock_model_index.json"
 
 
 def _classify_model_family(model_name):
-    """Classify a model name into its family using MODEL_FAMILY_RULES."""
-    lower = model_name.lower()
+    """Classify a model name into its family using MODEL_FAMILY_RULES.
+
+    Uses exact token matching (split on spaces/hyphens) to avoid substring
+    false positives (e.g., "4" matching inside "3.4" or "405B").
+    """
+    tokens = _re.split(r"[\s\-]+", model_name.lower())
     for keywords, family in MODEL_FAMILY_RULES:
-        if all(kw in lower for kw in keywords):
+        if all(kw in tokens for kw in keywords):
             return family
     return "Other"
 

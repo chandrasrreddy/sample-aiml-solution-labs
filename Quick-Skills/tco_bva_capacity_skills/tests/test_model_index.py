@@ -111,6 +111,16 @@ def test_classify_model_family():
     _assert(_classify_model_family("Gemma 3 27B") == "Gemma",
             "Gemma 3 27B → Gemma")
 
+    # Regression tests: substring matching bugs that are now fixed
+    _assert(_classify_model_family("Llama 3.1 405B") == "Llama 3.1",
+            "Llama 3.1 405B → Llama 3.1 (not Llama 4)")
+    _assert(_classify_model_family("Meta Llama 2 Chat 13B") == "Llama 2",
+            "Meta Llama 2 Chat 13B → Llama 2 (not Llama 3)")
+    _assert(_classify_model_family("Cohere Generate Model - Command") == "Command",
+            "Cohere Generate Model - Command → Command (not Command R)")
+    _assert(_classify_model_family("Jamba-Instruct") == "Jamba",
+            "Jamba-Instruct → Jamba (hyphen split)")
+
     # Unknown model → Other
     _assert(_classify_model_family("SomeNewModel v99") == "Other",
             "Unknown model → Other")
