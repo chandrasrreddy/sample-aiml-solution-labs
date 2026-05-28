@@ -5735,6 +5735,94 @@ def aggregate_capacity_by_model(capacity_profile):
     return result
 
 
+def _write_capacity_report(result, filepath):
+    """Write the full capacity fit detail to a markdown report file."""
+    lines = []
+    lines.append("# Capacity Fit Report")
+    lines.append("")
+
+    # Summary table
+    fits_icon = "✅" if result.get("fits") else "❌" if result.get("fits") is False else "⚠️"
+    lines.append(f"**Overall: {fits_icon} {'Fits' if result.get('fits') else 'Does NOT fit' if result.get('fits') is False else 'Unknown (no limits)'}**")
+    lines.append("")
+    lines.append("## Capacity Summary")
+    lines.append("")
+    lines.append("| Metric | Your Workload (Peak) | Quota Limit | Fits? | Utilization |")
+    lines.append("|--------|:--------------------:|:-----------:|:-----:|:-----------:|")
+
+    tier_limits = result.get("tier_limits", {})
+    rpm_fit = "✅" if result.get("rpm_fits") else "❌" if result.get("rpm_fits") is False else "—"
+    tpm_fit = "✅" if result.get("tpm_fits") else "❌" if result.get("tpm_fits") is False else "—"
+    tpd_fit = "✅" if result.get("tpd_fits") else "❌" if result.get("tpd_fits") is False else "—"
+
+    rpm_limit = tier_limits.get("rpm_high")
+    tpm_limit = tier_limits.get("tpm_high")
+    tpd_limit = tier_limits.get("tpd_high")
+
+    rpm_util = result.get("rpm_utilization_pct")
+    tpm_util = result.get("tpm_utilization_pct")
+    tpd_util = result.get("tpd_utilization_pct")
+
+    lines.append(f"| RPM | {result['peak_rpm']:,.0f} | {rpm_limit:,.0f} | {rpm_fit} | {rpm_util:.1f}% |" if rpm_limit else f"| RPM | {result['peak_rpm']:,.0f} | — | — | — |")
+    lines.append(f"| TPM (effective) | {result['effective_peak_tpm']:,.0f} | {tpm_limit:,.0f} | {tpm_fit} | {tpm_util:.1f}% |" if tpm_limit else f"| TPM (effective) | {result['effective_peak_tpm']:,.0f} | — | — | — |")
+    if tpd_limit and tpd_limit > 0:
+        lines.append(f"| TPD | {result['estimated_tpd']:,.0f} | {tpd_limit:,.0f} | {tpd_fit} | {tpd_util:.1f}% |")
+    lines.append("")
+
+    # Recommendations
+    if result.get("recommendations"):
+        lines.append("## Recommendations")
+        lines.append("")
+        for rec in result["recommendations"]:
+            lines.append(f"- {rec}")
+        lines.append("")
+
+    # Optimization checklist
+    if result.get("optimization_checklist"):
+        lines.append("## Optimization Checklist")
+        lines.append("")
+        lines.append("| Area | Current | Action |")
+        lines.append("|------|---------|--------|")
+        for item in result["optimization_checklist"]:
+            lines.append(f"| {item['area']} | {item['current']} | {item['action']} |")
+        lines.append("")
+
+    # Assumptions
+    if result.get("assumptions"):
+        lines.append("## Assumptions")
+        lines.append("")
+        lines.append("| Parameter | Value |")
+        lines.append("|-----------|-------|")
+        for k, v in result["assumptions"].items():
+            lines.append(f"| {k} | {v} |")
+        lines.append("")
+
+    # Explanation
+    explanation = result.get("explanation", {})
+    if explanation:
+        lines.append("## Detailed Calculations")
+        lines.append("")
+        for section_name, section_data in explanation.items():
+            lines.append(f"### {section_name}")
+            lines.append("")
+            lines.append("| Step | Calculation |")
+            lines.append("|------|-------------|")
+            for step, calc in section_data.items():
+                lines.append(f"| {step} | {calc} |")
+            lines.append("")
+
+    content = "\n".join(lines)
+
+    try:
+        dir_path = os.path.dirname(filepath)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        with open(filepath, "w") as f:
+            f.write(content)
+    except Exception as e:
+        print(f"⚠️  Capacity report: Could not write to {filepath}: {e}", file=sys.stderr)
+
+
 def check_capacity_fit(
     capacity_profile,
     # Traffic profile
@@ -5747,6 +5835,8 @@ def check_capacity_fit(
     max_tokens_setting=None,           # what max_tokens is set to in the API call
     # Quota limits — must provide actual limits from query_quotas()
     tier_limits=None,                  # Required: {"rpm_high": N, "tpm_high": N, "tpd_high": N (optional)} from quota cache
+    # Output control
+    report_file=None,                  # Path to write full detail. When set, returns compact summary only.
 ):
     """Check if a workload fits within Bedrock RPM/TPM/TPD quota limits.
 
@@ -5956,7 +6046,7 @@ def check_capacity_fit(
         "tier_comparison": tier_comparison,
     }
 
-    return {
+    full_result = {
         "avg_rpm": avg_rpm,
         "peak_rpm": peak_rpm,
         "avg_tpm": avg_tpm,
@@ -5983,6 +6073,36 @@ def check_capacity_fit(
             "max_tokens_setting": max_tokens_setting,
         },
         "explanation": explanation,
+    }
+
+    # Auto-generate report path if not provided
+    if report_file is None:
+        model_name = capacity_profile.get("model_name", "model")
+        report_dir = _resolve_setting("reports", "output_dir", None)
+        if report_dir is None:
+            report_dir = "~/bedrock_reports"
+        report_dir = os.path.expanduser(report_dir)
+        os.makedirs(report_dir, exist_ok=True)
+        safe_name = _re.sub(r"[^a-z0-9]+", "-", model_name.lower()).strip("-") or "model"
+        report_file = os.path.join(report_dir, f"capacity-{safe_name}.md")
+
+    # Write full detail to report file
+    _write_capacity_report(full_result, report_file)
+
+    # Return compact summary (what the SKILL.md says to present)
+    return {
+        "fits": fits,
+        "peak_rpm": round(peak_rpm, 1),
+        "effective_peak_tpm": round(effective_peak_tpm, 0),
+        "estimated_tpd": round(estimated_tpd, 0),
+        "rpm_utilization_pct": round(rpm_util, 1) if rpm_util is not None else None,
+        "tpm_utilization_pct": round(tpm_util, 1) if tpm_util is not None else None,
+        "tpd_utilization_pct": round(tpd_util, 1) if tpd_util is not None else None,
+        "rpm_fits": rpm_fits,
+        "tpm_fits": tpm_fits,
+        "tpd_fits": tpd_fits,
+        "recommendations": recommendations,
+        "report_file": report_file,
     }
 
 
