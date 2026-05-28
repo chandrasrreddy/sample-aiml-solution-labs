@@ -2011,18 +2011,92 @@ def estimate_cost(cache_dir, region, model_name, sessions_per_month, **overrides
     return calculate_agent_session_compounded_cost(main_agent_config=main_agent_config)
 
 
-def query_agentcore_pricing(cache_dir, region_filter):
+def _extract_agentcore_component(usagetype):
+    """Extract the top-level component name from an AgentCore usagetype string.
+
+    Pattern: '<REGION_PREFIX>-<Component>:Consumption-based:<SubType>'
+    Example: 'USW2-Runtime:Consumption-based:vCPU' → 'Runtime'
+    """
+    if "-" not in usagetype:
+        return None
+    after_region = usagetype.split("-", 1)[1]
+    if ":" not in after_region:
+        return None
+    return after_region.split(":")[0]
+
+
+def list_agentcore_components(cache_dir, region):
+    """List available AgentCore components in a region.
+
+    Returns the top-level component names (e.g., Runtime, Gateway, Memory)
+    that have pricing entries in the cache for the given region.
+
+    Args:
+        cache_dir (str): Path to cache directory (e.g., "~/bedrock_cache").
+        region (str): AWS region code (e.g., "us-west-2").
+
+    Example:
+        components = list_agentcore_components("~/bedrock_cache", "us-west-2")
+        # → ["BrowserTool", "CodeInterpreter", "Evaluations", "Gateway", "Memory", "Runtime"]
+
+    Returns: sorted list of component name strings, or empty list if region not found.
+
+    Raises:
+        FileNotFoundError: If AgentCore cache file does not exist.
+    """
+    cache_dir = os.path.expanduser(cache_dir)
+    filepath = os.path.join(cache_dir, CACHE_FILES.get(AGENTCORE_SERVICE_CODE, ""))
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(
+            f"AgentCore pricing cache not found at {filepath}. "
+            f"Run --refresh to fetch pricing data."
+        )
+
+    products = _load_cache_file(cache_dir, AGENTCORE_SERVICE_CODE)
+    components = set()
+    for prod in products:
+        attrs = prod.get("product", {}).get("attributes", {})
+        if attrs.get("regionCode", "") != region:
+            continue
+        component = _extract_agentcore_component(attrs.get("usagetype", ""))
+        if component:
+            components.add(component)
+
+    return sorted(components)
+
+
+def query_agentcore_pricing(cache_dir, region_filter, components=None):
     """Query AgentCore pricing from the local cache and return structured price entries.
 
     Args (required):
         cache_dir (str): Path to cache directory containing AgentCore pricing JSON.
         region_filter (str): AWS region code (e.g., "us-east-1").
+    Args (optional):
+        components (list): Filter to specific top-level components
+            (e.g., ["Runtime", "Gateway", "Memory"]). If None, returns all.
 
     Example:
+        # All components:
         query_agentcore_pricing("~/bedrock_cache", "us-east-1")
 
+        # Only defaults:
+        query_agentcore_pricing("~/bedrock_cache", "us-east-1",
+                                components=["Runtime", "Gateway", "Memory"])
+
     Returns: list of dicts with keys component, sub_component, region, dimensions.
+        Returns empty list if no entries match (invalid region or component names).
     """
+    cache_dir = os.path.expanduser(cache_dir)
+
+    # Validate components parameter
+    if components is not None:
+        if not isinstance(components, (list, tuple)):
+            raise TypeError(
+                f"components must be a list or None, got {type(components).__name__}"
+            )
+        if len(components) == 0:
+            return []
+
     results = []
     products = _load_cache_file(cache_dir, AGENTCORE_SERVICE_CODE)
     for prod in products:
@@ -2030,6 +2104,14 @@ def query_agentcore_pricing(cache_dir, region_filter):
         region_code = attrs.get("regionCode", "")
         if region_code != region_filter:
             continue
+
+        usagetype = attrs.get("usagetype", "")
+        top_component = _extract_agentcore_component(usagetype)
+
+        # Filter by components if specified
+        if components is not None and top_component not in components:
+            continue
+
         service_name = attrs.get("servicename", attrs.get("group", "AgentCore"))
         component = attrs.get("group", attrs.get("usagetype", "Unknown"))
         dimensions = _parse_price_dimensions(prod.get("terms", {}))
