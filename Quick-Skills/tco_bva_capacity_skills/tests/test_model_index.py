@@ -335,11 +335,234 @@ def test_integration():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Group 5: list_agentcore_components()
+# ═══════════════════════════════════════════════════════════════════════════════
+def test_list_agentcore_components():
+    cache_dir = os.path.expanduser("~/bedrock_cache")
+
+    # Basic lookup
+    components = list_agentcore_components(cache_dir, "us-west-2")
+    _assert(isinstance(components, list),
+            "list_agentcore_components returns a list")
+    _assert(len(components) >= 4,
+            f"us-west-2 has >= 4 components (got {len(components)})")
+
+    # Known components exist
+    _assert("Runtime" in components,
+            "Runtime is in components")
+    _assert("Gateway" in components,
+            "Gateway is in components")
+    _assert("Memory" in components,
+            "Memory is in components")
+
+    # List is sorted
+    _assert(components == sorted(components),
+            "components list is sorted")
+
+    # All values are strings
+    for c in components:
+        _assert(isinstance(c, str),
+                f"component is a string: {c}")
+
+    # Non-existent region returns empty
+    empty = list_agentcore_components(cache_dir, "xx-nowhere-99")
+    _assert(empty == [],
+            "non-existent region returns empty list")
+
+    # FileNotFoundError when cache missing
+    tmp_dir = tempfile.mkdtemp(prefix="test_no_ac_cache_")
+    try:
+        raised = False
+        try:
+            list_agentcore_components(tmp_dir, "us-west-2")
+        except FileNotFoundError:
+            raised = True
+        _assert(raised,
+                "raises FileNotFoundError when AgentCore cache missing")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # query_agentcore_pricing with component filter (case-insensitive)
+    r1 = query_agentcore_pricing(cache_dir, "us-west-2", components=["Runtime"])
+    r2 = query_agentcore_pricing(cache_dir, "us-west-2", components=["runtime"])
+    r3 = query_agentcore_pricing(cache_dir, "us-west-2", components=["RUNTIME"])
+    _assert(len(r1) == len(r2) == len(r3),
+            "component filter is case-insensitive")
+    _assert(len(r1) > 0,
+            "Runtime filter returns entries")
+
+    # Empty list returns empty
+    r_empty = query_agentcore_pricing(cache_dir, "us-west-2", components=[])
+    _assert(r_empty == [],
+            "empty components list returns empty result")
+
+    # Invalid type raises TypeError
+    raised_type = False
+    try:
+        query_agentcore_pricing(cache_dir, "us-west-2", components="Runtime")
+    except TypeError:
+        raised_type = True
+    _assert(raised_type,
+            "string components raises TypeError")
+
+    # Non-existent component returns empty
+    r_fake = query_agentcore_pricing(cache_dir, "us-west-2", components=["VectorDB"])
+    _assert(r_fake == [],
+            "non-existent component returns empty")
+
+    # None returns all (more than filtered)
+    r_all = query_agentcore_pricing(cache_dir, "us-west-2", components=None)
+    r_filtered = query_agentcore_pricing(cache_dir, "us-west-2", components=["Runtime", "Gateway", "Memory"])
+    _assert(len(r_all) > len(r_filtered),
+            "None returns more entries than filtered subset")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Group 6: check_capacity_fit() compact return
+# ═══════════════════════════════════════════════════════════════════════════════
+def test_check_capacity_fit_compact():
+    cache_dir = os.path.expanduser("~/bedrock_cache")
+
+    # Get a capacity profile
+    result = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4.6", 100000)
+    cp = result["capacity_profile"]["main_agent"]
+    tier_limits = get_tier_limits_for_model(cache_dir, "Claude Sonnet 4.6", "us-west-2")
+
+    # Basic call — returns compact dict
+    fit = check_capacity_fit(
+        capacity_profile=cp,
+        questions_per_month=500000,
+        tier_limits=tier_limits,
+    )
+    _assert(isinstance(fit, dict),
+            "check_capacity_fit returns a dict")
+
+    # Required keys in compact result
+    required_keys = [
+        "fits", "peak_rpm", "effective_peak_tpm", "estimated_tpd",
+        "rpm_utilization_pct", "tpm_utilization_pct", "tpd_utilization_pct",
+        "rpm_fits", "tpm_fits", "tpd_fits", "recommendations", "report_file",
+        "_report_write_failed",
+    ]
+    for key in required_keys:
+        _assert(key in fit, f"compact result has key '{key}'")
+
+    # Keys that should NOT be in compact result (they belong in the report file)
+    excluded_keys = ["explanation", "assumptions", "optimization_checklist",
+                     "avg_rpm", "avg_tpm", "tier_limits", "max_tokens_overhead_per_req"]
+    for key in excluded_keys:
+        _assert(key not in fit, f"compact result does NOT have '{key}'")
+
+    # Types are correct
+    _assert(isinstance(fit["fits"], bool),
+            "fits is a bool")
+    _assert(isinstance(fit["peak_rpm"], float),
+            "peak_rpm is a float")
+    _assert(isinstance(fit["recommendations"], list),
+            "recommendations is a list")
+    _assert(fit["_report_write_failed"] is False,
+            "_report_write_failed is False on success")
+
+    # Report file was created
+    _assert(fit["report_file"] is not None,
+            "report_file is not None")
+    _assert(os.path.exists(fit["report_file"]),
+            "report file exists on disk")
+
+    # Report file has content
+    with open(fit["report_file"]) as f:
+        content = f.read()
+    _assert(len(content) > 500,
+            "report file has substantial content")
+    _assert("Capacity Fit Report" in content,
+            "report file has header")
+    _assert("Detailed Calculations" in content,
+            "report file has detailed calculations section")
+    _assert("Optimization Checklist" in content,
+            "report file has optimization checklist")
+
+    # output_dir puts report in session directory
+    tmp_dir = tempfile.mkdtemp(prefix="test_cap_session_")
+    try:
+        fit2 = check_capacity_fit(
+            capacity_profile=cp,
+            questions_per_month=500000,
+            tier_limits=tier_limits,
+            output_dir=tmp_dir,
+        )
+        _assert(fit2["report_file"].startswith(tmp_dir),
+                "output_dir places report in session directory")
+        _assert(fit2["report_file"].endswith("/capacity.md"),
+                "output_dir names file capacity.md")
+        _assert(os.path.exists(fit2["report_file"]),
+                "session dir report file exists")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # report_file overrides output_dir
+    tmp_dir2 = tempfile.mkdtemp(prefix="test_cap_explicit_")
+    try:
+        explicit_path = os.path.join(tmp_dir2, "my-report.md")
+        fit3 = check_capacity_fit(
+            capacity_profile=cp,
+            questions_per_month=500000,
+            tier_limits=tier_limits,
+            report_file=explicit_path,
+            output_dir="/should/be/ignored",
+        )
+        _assert(fit3["report_file"] == explicit_path,
+                "report_file takes precedence over output_dir")
+        _assert(os.path.exists(explicit_path),
+                "explicit report_file was created")
+    finally:
+        shutil.rmtree(tmp_dir2, ignore_errors=True)
+
+    # Write failure reflected in return
+    fit4 = check_capacity_fit(
+        capacity_profile=cp,
+        questions_per_month=500000,
+        tier_limits=tier_limits,
+        report_file="/proc/no/write/here.md",
+    )
+    _assert(fit4["_report_write_failed"] is True,
+            "_report_write_failed is True when write fails")
+    _assert(fit4["report_file"] is None,
+            "report_file is None when write fails")
+    _assert(fit4["fits"] is not None,
+            "fits still computed even when write fails")
+
+    # No tier_limits → fits is None
+    fit5 = check_capacity_fit(
+        capacity_profile=cp,
+        questions_per_month=500000,
+        tier_limits=None,
+    )
+    _assert(fit5["fits"] is None,
+            "fits is None when no tier_limits")
+    _assert(fit5["rpm_utilization_pct"] is None,
+            "utilization is None when no tier_limits")
+
+    # Workload that doesn't fit
+    haiku_limits = get_tier_limits_for_model(cache_dir, "Claude Haiku 4.5", "us-west-2")
+    fit6 = check_capacity_fit(
+        capacity_profile=cp,
+        questions_per_month=500000,
+        tier_limits=haiku_limits,
+    )
+    _assert(fit6["fits"] is False,
+            "Haiku at 500K questions doesn't fit (TPM exceeds)")
+    _assert(fit6["tpm_utilization_pct"] > 100,
+            "TPM utilization > 100% when it doesn't fit")
+    _assert(len(fit6["recommendations"]) > 0,
+            "recommendations non-empty when doesn't fit")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     print("=" * 70)
-    print("test_model_index.py — Model Index & list_models() Tests")
+    print("test_model_index.py — Model Index, AgentCore & Capacity Tests")
     print("=" * 70)
     print()
 
@@ -347,6 +570,8 @@ if __name__ == "__main__":
     _run_group("Group 2: _generate_model_index()", test_generate_model_index)
     _run_group("Group 3: list_models()", test_list_models)
     _run_group("Group 4: Integration", test_integration)
+    _run_group("Group 5: list_agentcore_components()", test_list_agentcore_components)
+    _run_group("Group 6: check_capacity_fit() compact", test_check_capacity_fit_compact)
 
     print()
     print("=" * 70)

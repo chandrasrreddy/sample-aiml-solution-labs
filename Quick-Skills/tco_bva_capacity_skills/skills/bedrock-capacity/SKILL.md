@@ -136,7 +136,7 @@ per_model = aggregate_capacity_by_model(capacity_profile)
 
 ### 5. Check Capacity Fit
 
-Run `check_capacity_fit()` for **each model**:
+Run `check_capacity_fit()` for **each model**. Always pass `output_dir` when using a session directory to group capacity reports with pricing reports:
 
 ```python
 # Single-agent: use capacity_profile["main_agent"] directly
@@ -149,7 +149,9 @@ result = check_capacity_fit(
     active_hours_per_day=12,
     active_days_per_month=22,
     tier_limits=tier_limits,  # from get_tier_limits_for_model()
+    output_dir=session_dir,   # groups capacity.md with bedrock-pricing.md
 )
+# Returns compact summary: fits, utilization %, recommendations, report_file
 
 # Multi-agent: iterate per_model from aggregate_capacity_by_model()
 for model_name, model_data in per_model.items():
@@ -162,8 +164,14 @@ for model_name, model_data in per_model.items():
         questions_per_month=model_data["questions_per_month"],
         output_burndown_rate=5,  # 5 for Claude 3.7+, 1 for others
         tier_limits=tier_limits,
+        output_dir=session_dir,
     )
 ```
+
+**Output control:**
+- `output_dir=session_dir` — writes `capacity.md` inside session directory (recommended)
+- `report_file="/explicit/path.md"` — writes to exact path (overrides output_dir)
+- Neither — auto-generates a unique flat file in `~/bedrock_reports/`
 
 ### 6. Present Results
 
