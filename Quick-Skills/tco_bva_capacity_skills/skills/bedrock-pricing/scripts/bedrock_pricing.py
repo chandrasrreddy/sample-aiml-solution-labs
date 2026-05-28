@@ -6117,13 +6117,15 @@ def check_capacity_fit(
         "explanation": explanation,
     }
 
-    # Resolve report path: report_file > output_dir/capacity.md > auto-generated flat file
+    # Resolve report path: report_file > output_dir/capacity-{model}.md > auto-generated flat file
     if report_file is not None:
         report_file = os.path.abspath(os.path.expanduser(report_file))
     elif output_dir is not None:
         output_dir = os.path.abspath(os.path.expanduser(output_dir))
         os.makedirs(output_dir, exist_ok=True)
-        report_file = os.path.join(output_dir, "capacity.md")
+        model_name = capacity_profile.get("model_name", "model")
+        safe_name = _re.sub(r"[^a-z0-9]+", "-", model_name.lower()).strip("-") or "model"
+        report_file = os.path.join(output_dir, f"capacity-{safe_name}.md")
     else:
         model_name = capacity_profile.get("model_name", "model")
         questions_per_session = capacity_profile.get("questions_per_session", 5)

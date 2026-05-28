@@ -496,8 +496,8 @@ def test_check_capacity_fit_compact():
         )
         _assert(fit2["report_file"].startswith(tmp_dir),
                 "output_dir places report in session directory")
-        _assert(fit2["report_file"].endswith("/capacity.md"),
-                "output_dir names file capacity.md")
+        _assert("capacity-" in os.path.basename(fit2["report_file"]),
+                "output_dir names file capacity-{model}.md")
         _assert(os.path.exists(fit2["report_file"]),
                 "session dir report file exists")
     finally:
