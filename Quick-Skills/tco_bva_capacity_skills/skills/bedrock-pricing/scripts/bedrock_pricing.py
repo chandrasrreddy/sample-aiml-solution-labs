@@ -5842,7 +5842,8 @@ def check_capacity_fit(
     # Quota limits — must provide actual limits from query_quotas()
     tier_limits=None,                  # Required: {"rpm_high": N, "tpm_high": N, "tpd_high": N (optional)} from quota cache
     # Output control
-    report_file=None,                  # Path to write full detail. When set, returns compact summary only.
+    report_file=None,                  # Explicit file path for the report (overrides output_dir)
+    output_dir=None,                   # Session directory — writes capacity.md inside it
 ):
     """Check if a workload fits within Bedrock RPM/TPM/TPD quota limits.
 
@@ -6081,8 +6082,14 @@ def check_capacity_fit(
         "explanation": explanation,
     }
 
-    # Auto-generate report path if not provided (same pattern as pricing reports)
-    if report_file is None:
+    # Resolve report path: report_file > output_dir/capacity.md > auto-generated flat file
+    if report_file is not None:
+        report_file = os.path.abspath(os.path.expanduser(report_file))
+    elif output_dir is not None:
+        output_dir = os.path.abspath(os.path.expanduser(output_dir))
+        os.makedirs(output_dir, exist_ok=True)
+        report_file = os.path.join(output_dir, "capacity.md")
+    else:
         model_name = capacity_profile.get("model_name", "model")
         questions_per_session = capacity_profile.get("questions_per_session", 5)
         sessions = questions_per_month // questions_per_session if questions_per_session > 0 else questions_per_month
