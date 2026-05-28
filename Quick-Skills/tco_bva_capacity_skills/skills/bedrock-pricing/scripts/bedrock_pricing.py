@@ -135,6 +135,14 @@ PROVIDER_RULES = [
     (["Ray"], "Ray"),
 ]
 
+# TODO: MODEL_FAMILY_RULES requires manual maintenance when AWS adds new model families.
+# Unrecognized models fall into "Other" silently. Consider auto-discovering families from
+# model name patterns at refresh time instead of maintaining a hardcoded list.
+#
+# TODO: Rule ordering is fragile — substring matching means "4" matches "3.4".
+# More specific rules (longer version strings) MUST come before shorter ones.
+# E.g., ("llama", "3.4") must precede ("llama", "4") or "Llama 3.4" misclassifies.
+# Consider word-boundary matching to eliminate this ordering dependency.
 MODEL_FAMILY_RULES = [
     (["opus"], "Opus"),
     (["sonnet"], "Sonnet"),
@@ -1835,6 +1843,8 @@ def _get_min_cache_tokens(model_name):
     return None
 
 
+# TODO: list_models() returns alphabetically sorted names. Newest-first would be
+# more natural UX but requires version parsing (non-trivial across naming conventions).
 def list_models(cache_dir, region, family):
     """List available model versions for a family in a region.
 
@@ -1859,8 +1869,21 @@ def list_models(cache_dir, region, family):
     cache_dir = os.path.expanduser(cache_dir)
     index_path = os.path.join(cache_dir, MODEL_INDEX_FILE)
 
+    # Check if index needs (re)generation: missing or stale vs cache files
+    needs_regen = False
     if not os.path.exists(index_path):
-        # Auto-generate if cache files exist but index doesn't (upgrade path)
+        needs_regen = True
+    else:
+        # Regenerate if any cache file is newer than the index
+        index_mtime = os.path.getmtime(index_path)
+        for f in CACHE_FILES.values():
+            if f:
+                cache_path = os.path.join(cache_dir, f)
+                if os.path.exists(cache_path) and os.path.getmtime(cache_path) > index_mtime:
+                    needs_regen = True
+                    break
+
+    if needs_regen:
         cache_files_exist = any(
             os.path.exists(os.path.join(cache_dir, f))
             for f in CACHE_FILES.values() if f
