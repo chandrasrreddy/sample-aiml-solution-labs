@@ -64,17 +64,30 @@ cache_status = check_pricing_data_status()
 - `"stale"` — warn the user that cache is older than 7 days, suggest refresh, but proceed with available data.
 - `"partial"` or `"missing"` — if `bedrock_pricing_agentcore.json` is in `cache_status["missing"]`, **stop**. Tell the user to run `cache_status["refresh_command"]` and do not attempt queries.
 
-### 2. Look Up AgentCore Prices
+### 2. List Available Components
 
 ```python
 home = os.path.expanduser("~/bedrock_cache")
-ac_prices = query_agentcore_pricing(home, region_filter="us-east-1")
+components = list_agentcore_components(home, "us-east-1")
+# → ["BrowserTool", "CodeInterpreter", "Evaluations", "Gateway", "Memory", "Runtime"]
 ```
 
-- If user needs a combined estimate (model + infrastructure), also call `query_model_pricing()` for the model prices
+- Present available components to the user if they haven't specified which ones to include
+- Default components for agentic workloads: **Runtime, Gateway, Memory**
+- Only add BrowserTool, CodeInterpreter, or Evaluations if user explicitly requests them
+
+### 3. Look Up AgentCore Prices
+
+```python
+# Filter to only the components needed (reduces token consumption)
+ac_prices = query_agentcore_pricing(home, "us-east-1", components=["Runtime", "Gateway", "Memory"])
+```
+
+- Pass `components` parameter to filter results (case-insensitive)
+- If user needs a combined estimate (model + infrastructure), also call `get_model_prices()` for the model prices
 - If user does not specify a region, ask which region they want
 
-### 3. Present Assumptions
+### 4. Present Assumptions
 
 Show all parameters and their values. Ask the user to confirm before calculating. Key parameters to surface:
 - Questions per month and per session
@@ -83,7 +96,7 @@ Show all parameters and their values. Ask the user to confirm before calculating
 - I/O wait percentage
 - Which components are included (Runtime, Gateway, Memory, BrowserTool, CodeInterpreter, Evaluations)
 
-### 4. Calculate AgentCore Cost
+### 5. Calculate AgentCore Cost
 
 ```python
 result = calculate_agentcore_cost(
@@ -119,7 +132,7 @@ result = calculate_agentcore_cost(
 
 The function writes a detailed report to a file and returns a compact summary dict. See "Report Output" section below.
 
-### 5. Calculate Evaluations (if requested)
+### 6. Calculate Evaluations (if requested)
 
 ```python
 eval_result = calculate_evaluation_cost(
@@ -132,13 +145,13 @@ eval_result = calculate_evaluation_cost(
 )
 ```
 
-### 6. For Combined Estimates (Model + Infrastructure)
+### 7. For Combined Estimates (Model + Infrastructure)
 
 - Load `bedrock-pricing` to get model inference costs via `calculate_agent_session_compounded_cost()`
 - Sum model cost + AgentCore cost for the grand total
 - Present per-component breakdown showing where spend goes
 
-### 7. Present Results
+### 8. Present Results
 
 The function returns a compact summary with key metrics. Present it as a markdown table:
 
@@ -164,7 +177,7 @@ The function returns a compact summary with key metrics. Present it as a markdow
 - Highlight the top cost component
 - If the user asks for detailed breakdown, direct them to the report file
 
-### 8. Completeness Check (MANDATORY — DO NOT SKIP)
+### 9. Completeness Check (MANDATORY — DO NOT SKIP)
 
 Before presenting final results to the user, verify ALL applicable items below. Do NOT present results until every applicable check passes.
 

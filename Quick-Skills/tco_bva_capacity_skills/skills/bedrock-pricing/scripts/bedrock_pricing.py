@@ -2096,6 +2096,9 @@ def query_agentcore_pricing(cache_dir, region_filter, components=None):
             )
         if len(components) == 0:
             return []
+        components_lower = {c.lower() for c in components}
+    else:
+        components_lower = None
 
     results = []
     products = _load_cache_file(cache_dir, AGENTCORE_SERVICE_CODE)
@@ -2108,9 +2111,10 @@ def query_agentcore_pricing(cache_dir, region_filter, components=None):
         usagetype = attrs.get("usagetype", "")
         top_component = _extract_agentcore_component(usagetype)
 
-        # Filter by components if specified
-        if components is not None and top_component not in components:
-            continue
+        # Filter by components if specified (case-insensitive)
+        if components_lower is not None:
+            if not top_component or top_component.lower() not in components_lower:
+                continue
 
         service_name = attrs.get("servicename", attrs.get("group", "AgentCore"))
         component = attrs.get("group", attrs.get("usagetype", "Unknown"))
@@ -5819,8 +5823,10 @@ def _write_capacity_report(result, filepath):
             os.makedirs(dir_path, exist_ok=True)
         with open(filepath, "w") as f:
             f.write(content)
+        return True
     except Exception as e:
         print(f"⚠️  Capacity report: Could not write to {filepath}: {e}", file=sys.stderr)
+        return False
 
 
 def check_capacity_fit(
@@ -6085,10 +6091,10 @@ def check_capacity_fit(
         )
 
     # Write full detail to report file
-    _write_capacity_report(full_result, report_file)
+    write_ok = _write_capacity_report(full_result, report_file)
 
     # Return compact summary (what the SKILL.md says to present)
-    return {
+    compact = {
         "fits": fits,
         "peak_rpm": round(peak_rpm, 1),
         "effective_peak_tpm": round(effective_peak_tpm, 0),
@@ -6100,8 +6106,10 @@ def check_capacity_fit(
         "tpm_fits": tpm_fits,
         "tpd_fits": tpd_fits,
         "recommendations": recommendations,
-        "report_file": report_file,
+        "report_file": report_file if write_ok else None,
+        "_report_write_failed": not write_ok,
     }
+    return compact
 
 
 

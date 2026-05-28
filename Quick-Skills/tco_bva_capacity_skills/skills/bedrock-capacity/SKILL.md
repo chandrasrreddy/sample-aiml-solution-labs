@@ -269,20 +269,35 @@ See the `capacity` section in the config template for overridable settings:
 | Active hours/day | Ask user to validate |
 | Active days/month | Business days |
 
-## Explanation Rendering
+## Return Format
 
-`result["explanation"]` contains:
+`check_capacity_fit()` returns a compact summary dict and writes full detail to a report file:
 
-| Section | What it shows |
-|---------|---------------|
-| `rpm_calculation` | How peak RPM was derived |
-| `tpm_calculation` | How effective peak TPM was derived |
-| `tpd_calculation` | How estimated daily token consumption was derived |
-| `tier_comparison` | Fit/no-fit against actual quota limits (RPM, TPM, TPD) |
+```python
+{
+    "fits": True,
+    "peak_rpm": 568.2,
+    "effective_peak_tpm": 5793182.0,
+    "estimated_tpd": 846590909.0,
+    "rpm_utilization_pct": 5.7,
+    "tpm_utilization_pct": 96.6,
+    "tpd_utilization_pct": 9.8,
+    "rpm_fits": True,
+    "tpm_fits": True,
+    "tpd_fits": True,
+    "recommendations": ["Workload fits within limits. RPM utilization: 6%, TPM utilization: 97%."],
+    "report_file": "/Users/x/bedrock_reports/capacity-claude-sonnet-4.6_100k-sessions_20260528-171330-c4f4.md",
+    "_report_write_failed": False,
+}
+```
+
+The report file contains: capacity summary table, recommendations, optimization checklist, assumptions, and step-by-step RPM/TPM/TPD calculations.
 
 ### Rules for rendering:
-- Default: show fit/no-fit summary with utilization %
-- On demand: format explanation sections as markdown
+- Present the compact summary as a markdown table (fits?, utilization %)
+- If `_report_write_failed` is True, tell user the report could not be saved
+- If workload doesn't fit, present recommendations from the compact result
+- For full calculation detail, direct user to the report file
 - Always use markdown, never HTML artifacts or details tags
 
 ## Related Skills
