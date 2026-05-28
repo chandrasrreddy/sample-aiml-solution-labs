@@ -180,7 +180,7 @@ MODEL_FAMILY_RULES = [
     (["embed"], "Embed"),
     (["jamba"], "Jamba"),
     (["deepseek"], "DeepSeek"),
-    (["qwen3"], "Qwen"),
+    (["qwen"], "Qwen"),
     (["palmyra"], "Palmyra"),
     (["stable", "diffusion"], "Stable Diffusion"),
     (["stable", "image"], "Stable Image"),
@@ -203,12 +203,25 @@ def _classify_model_family(model_name):
 
     Uses exact token matching (split on spaces/hyphens) to avoid substring
     false positives (e.g., "4" matching inside "3.4" or "405B").
+
+    Alphabetic-only keywords also match as prefixes, so "qwen" matches
+    tokens like "qwen3", "qwen4" without needing a rule per version.
+    Keywords containing digits/dots use exact match only.
     """
     tokens = _re.split(r"[\s\-]+", model_name.lower())
     for keywords, family in MODEL_FAMILY_RULES:
-        if all(kw in tokens for kw in keywords):
+        if all(_keyword_matches(kw, tokens) for kw in keywords):
             return family
     return "Other"
+
+
+def _keyword_matches(keyword, tokens):
+    """Check if a keyword matches any token — exact, or prefix if keyword is alpha-only."""
+    if keyword in tokens:
+        return True
+    if keyword.isalpha():
+        return any(t.startswith(keyword) for t in tokens)
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

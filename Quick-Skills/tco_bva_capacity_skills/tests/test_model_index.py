@@ -106,6 +106,10 @@ def test_classify_model_family():
             "DeepSeek V3.1 → DeepSeek")
     _assert(_classify_model_family("Qwen3 32B") == "Qwen",
             "Qwen3 32B → Qwen")
+    _assert(_classify_model_family("Qwen4 72B") == "Qwen",
+            "Qwen4 72B → Qwen (future-proof via prefix)")
+    _assert(_classify_model_family("Qwen5 VL 128B") == "Qwen",
+            "Qwen5 VL 128B → Qwen (future-proof via prefix)")
     _assert(_classify_model_family("GLM 4.7") == "GLM",
             "GLM 4.7 → GLM")
     _assert(_classify_model_family("Gemma 3 27B") == "Gemma",
