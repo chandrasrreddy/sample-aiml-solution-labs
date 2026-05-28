@@ -6075,16 +6075,14 @@ def check_capacity_fit(
         "explanation": explanation,
     }
 
-    # Auto-generate report path if not provided
+    # Auto-generate report path if not provided (same pattern as pricing reports)
     if report_file is None:
         model_name = capacity_profile.get("model_name", "model")
-        report_dir = _resolve_setting("reports", "output_dir", None)
-        if report_dir is None:
-            report_dir = "~/bedrock_reports"
-        report_dir = os.path.expanduser(report_dir)
-        os.makedirs(report_dir, exist_ok=True)
-        safe_name = _re.sub(r"[^a-z0-9]+", "-", model_name.lower()).strip("-") or "model"
-        report_file = os.path.join(report_dir, f"capacity-{safe_name}.md")
+        questions_per_session = capacity_profile.get("questions_per_session", 5)
+        sessions = questions_per_month // questions_per_session if questions_per_session > 0 else questions_per_month
+        report_file = _generate_report_path(
+            f"capacity-{model_name}", sessions
+        )
 
     # Write full detail to report file
     _write_capacity_report(full_result, report_file)
