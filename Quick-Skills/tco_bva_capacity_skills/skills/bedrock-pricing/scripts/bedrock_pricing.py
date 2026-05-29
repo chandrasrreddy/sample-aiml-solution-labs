@@ -311,6 +311,8 @@ CONFIG_SCHEMA = {
         "ltm_records_per_session": {"type": int, "default": 3, "min": 0, "description": "Long-term memory records extracted per session"},
         "ltm_retrievals_per_question": {"type": int, "default": 1, "min": 0, "description": "Long-term memory retrievals per question"},
         "tools_indexed": {"type": int, "default": 50, "min": 0, "description": "Number of tools indexed in Gateway (flat monthly fee)"},
+        "browser_io_wait_pct": {"type": float, "default": 0.70, "min": 0.0, "max": 1.0, "description": "BrowserTool I/O wait fraction (estimated — page loads + LLM responses). Validate against actual billing."},
+        "ci_io_wait_pct": {"type": float, "default": 0.20, "min": 0.0, "max": 1.0, "description": "CodeInterpreter I/O wait fraction (estimated — mostly active CPU). Validate against actual billing."},
         "eval_sampling_rate": {"type": float, "default": 0.10, "min": 0.0, "max": 1.0, "description": "Fraction of sessions evaluated (0.0-1.0)"},
         "eval_builtin_evaluators": {"type": int, "default": 3, "min": 0, "description": "Number of built-in evaluators (e.g., Helpfulness, Correctness, Safety)"},
     },
@@ -2016,7 +2018,6 @@ def estimate_cost(cache_dir, region, model_name, sessions_per_month, **overrides
     """End-to-end: model name → monthly cost estimate in one call.
 
     Combines get_model_prices() + calculate_agent_session_compounded_cost().
-    Pass any main_agent_config key as a keyword argument to override defaults.
 
     Args (required):
         cache_dir (str): Path to cache directory (e.g., "~/bedrock_cache").
@@ -2024,17 +2025,38 @@ def estimate_cost(cache_dir, region, model_name, sessions_per_month, **overrides
         model_name (str): Model name (e.g., "Claude Sonnet 4").
         sessions_per_month (int): Monthly session volume.
 
+    Keyword overrides:
+        output_dir (str): Session directory for the report file.
+        output_path (str): Explicit report file path (overrides output_dir).
+        Any other keyword: passed as a main_agent_config key
+            (e.g., questions_per_agent_session=3, system_prompt_tokens=4000).
+
     Example:
         cost = estimate_cost("~/bedrock_cache", "us-west-2", "Claude Sonnet 4", 10000)
-        # cost["monthly_total"] → 297.90
 
-        # With overrides:
+        # With session directory:
         cost = estimate_cost("~/bedrock_cache", "us-west-2", "Claude Sonnet 4", 10000,
-                             questions_per_agent_session=3, system_prompt_tokens=4000)
+                             output_dir=session_dir)
+
+        # With config overrides:
+        cost = estimate_cost("~/bedrock_cache", "us-west-2", "Claude Sonnet 4", 10000,
+                             questions_per_agent_session=3, system_prompt_tokens=4000,
+                             output_dir=session_dir)
 
     Returns: Same as calculate_agent_session_compounded_cost() — dict with
         session_total, monthly_total, annual_total, savings_pct, file_path, etc.
     """
+    # Separate report output params from main_agent_config overrides
+    output_dir = overrides.pop("output_dir", None)
+    output_path = overrides.pop("output_path", None)
+
+    # Guard: estimate_cost is single-agent only
+    if "subagents" in overrides:
+        raise ValueError(
+            "estimate_cost() does not support sub-agents. "
+            "Use calculate_agent_session_compounded_cost() for multi-agent workloads."
+        )
+
     prices = get_model_prices(cache_dir, region, model_name)
 
     main_agent_config = {
@@ -2047,7 +2069,11 @@ def estimate_cost(cache_dir, region, model_name, sessions_per_month, **overrides
     }
     main_agent_config.update(overrides)
 
-    return calculate_agent_session_compounded_cost(main_agent_config=main_agent_config)
+    return calculate_agent_session_compounded_cost(
+        main_agent_config=main_agent_config,
+        output_dir=output_dir,
+        output_path=output_path,
+    )
 
 
 def _extract_agentcore_component(usagetype):
@@ -5947,6 +5973,14 @@ def check_capacity_fit(
                 f"Missing: {missing}. Use get_tier_limits_for_model() to obtain valid limits."
             )
 
+    # Validate capacity_profile has required keys directly (no auto-extraction)
+    if "main_agent" in capacity_profile and "llm_calls_per_question" not in capacity_profile:
+        raise ValueError(
+            "capacity_profile contains 'main_agent' wrapper. "
+            "Pass capacity_profile['main_agent'] for the main agent, "
+            "or the specific sub-agent profile dict for sub-agent checks."
+        )
+
     # Extract token values from capacity_profile
     llm_calls_per_question = capacity_profile["llm_calls_per_question"]
     avg_input_per_call = capacity_profile["avg_input_tokens_per_call"]
@@ -6202,10 +6236,12 @@ def calculate_agentcore_cost(
     browser_usage_pct=1.0,
     browser_vcpus=2,
     browser_memory_gb=4,
+    browser_io_wait_pct=0.70,
     # CodeInterpreter params
     ci_usage_pct=1.0,
     ci_vcpus=2,
     ci_memory_gb=4,
+    ci_io_wait_pct=0.20,
     # Report output directory (optional)
     output_dir=None,
 ):
@@ -6262,6 +6298,8 @@ def calculate_agentcore_cost(
     stm_events_per_question = _resolve_setting("agentcore_defaults", "stm_events_per_question", stm_events_per_question)
     ltm_records_per_session = _resolve_setting("agentcore_defaults", "ltm_records_per_session", ltm_records_per_session)
     ltm_retrievals_per_question = _resolve_setting("agentcore_defaults", "ltm_retrievals_per_question", ltm_retrievals_per_question)
+    browser_io_wait_pct = _resolve_setting("agentcore_defaults", "browser_io_wait_pct", browser_io_wait_pct)
+    ci_io_wait_pct = _resolve_setting("agentcore_defaults", "ci_io_wait_pct", ci_io_wait_pct)
     tools_indexed = _resolve_setting("agentcore_defaults", "tools_indexed", tools_indexed)
 
     # Input validation
@@ -6310,8 +6348,8 @@ def calculate_agentcore_cost(
     browser_mem_cost = 0
     if browser_vcpu_price_hr is not None and browser_mem_price_hr is not None:
         browser_questions = questions_per_month * browser_usage_pct
-        # 100% duration — no I/O wait discount
-        browser_cpu_cost = (time_per_question_s * browser_questions * browser_vcpus
+        browser_active_cpu_per_q_s = time_per_question_s * (1 - browser_io_wait_pct)
+        browser_cpu_cost = (browser_active_cpu_per_q_s * browser_questions * browser_vcpus
                             * (browser_vcpu_price_hr / 3600))
         browser_mem_cost = (time_per_question_s * browser_questions * browser_memory_gb
                             * (browser_mem_price_hr / 3600))
@@ -6323,7 +6361,8 @@ def calculate_agentcore_cost(
     ci_mem_cost = 0
     if ci_vcpu_price_hr is not None and ci_mem_price_hr is not None:
         ci_questions = questions_per_month * ci_usage_pct
-        ci_cpu_cost = (time_per_question_s * ci_questions * ci_vcpus
+        ci_active_cpu_per_q_s = time_per_question_s * (1 - ci_io_wait_pct)
+        ci_cpu_cost = (ci_active_cpu_per_q_s * ci_questions * ci_vcpus
                        * (ci_vcpu_price_hr / 3600))
         ci_mem_cost = (time_per_question_s * ci_questions * ci_memory_gb
                        * (ci_mem_price_hr / 3600))

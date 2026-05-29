@@ -562,6 +562,148 @@ def test_check_capacity_fit_compact():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Group 7: Guards and I/O wait parameters
+# ═══════════════════════════════════════════════════════════════════════════════
+def test_guards_and_io_wait():
+    cache_dir = os.path.expanduser("~/bedrock_cache")
+
+    # --- estimate_cost guard: rejects subagents ---
+    raised = False
+    try:
+        estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4.6", 10000,
+                      subagents=[{"type": "rag"}])
+    except ValueError as e:
+        raised = True
+        _assert("multi-agent" in str(e).lower() or "sub-agent" in str(e).lower(),
+                "estimate_cost error message mentions multi-agent")
+    _assert(raised,
+            "estimate_cost raises ValueError when subagents passed")
+
+    # estimate_cost still works normally
+    result = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4.6", 10000)
+    _assert(result["monthly_total"] > 0,
+            "estimate_cost works without subagents")
+
+    # estimate_cost accepts output_dir
+    tmp_dir = tempfile.mkdtemp(prefix="test_estimate_dir_")
+    try:
+        session_dir = os.path.join(tmp_dir, "session")
+        os.makedirs(session_dir)
+        result2 = estimate_cost(cache_dir, "us-west-2", "Claude Sonnet 4.6", 10000,
+                                output_dir=session_dir)
+        _assert(session_dir in result2["file_path"],
+                "estimate_cost respects output_dir")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # --- check_capacity_fit guard: rejects full profile with main_agent wrapper ---
+    prices = get_model_prices(cache_dir, "us-west-2", "Claude Sonnet 4.6")
+    cost = calculate_agent_session_compounded_cost(
+        main_agent_config={**prices, "agent_sessions_per_month": 10000,
+                           "model_name": "Claude Sonnet 4.6"}
+    )
+    tier_limits = get_tier_limits_for_model(cache_dir, "Claude Sonnet 4.6", "us-west-2")
+
+    # Full profile (has main_agent key) should raise
+    raised2 = False
+    try:
+        check_capacity_fit(
+            capacity_profile=cost["capacity_profile"],
+            questions_per_month=50000,
+            tier_limits=tier_limits,
+        )
+    except ValueError as e:
+        raised2 = True
+        _assert("main_agent" in str(e),
+                "check_capacity_fit error mentions main_agent")
+    _assert(raised2,
+            "check_capacity_fit raises ValueError for wrapped profile")
+
+    # Explicit main_agent works
+    cap = check_capacity_fit(
+        capacity_profile=cost["capacity_profile"]["main_agent"],
+        questions_per_month=50000,
+        tier_limits=tier_limits,
+    )
+    _assert(cap["fits"] is not None,
+            "check_capacity_fit works with explicit main_agent")
+
+    # --- I/O wait parameters in calculate_agentcore_cost ---
+    ac_prices = query_agentcore_pricing(cache_dir, "us-west-2",
+                                         components=["Runtime", "BrowserTool", "CodeInterpreter"])
+    price_map = {}
+    for entry in ac_prices:
+        sub = entry["sub_component"]
+        price = float(entry["dimensions"][0]["price_usd"])
+        if "Runtime" in sub and "vCPU" in sub: price_map["runtime_vcpu"] = price
+        elif "Runtime" in sub and "Memory" in sub: price_map["runtime_mem"] = price
+        elif "BrowserTool" in sub and "vCPU" in sub: price_map["browser_vcpu"] = price
+        elif "BrowserTool" in sub and "Memory" in sub: price_map["browser_mem"] = price
+        elif "CodeInterpreter" in sub and "vCPU" in sub: price_map["ci_vcpu"] = price
+        elif "CodeInterpreter" in sub and "Memory" in sub: price_map["ci_mem"] = price
+
+    # Need gateway and memory prices too
+    ac_full = query_agentcore_pricing(cache_dir, "us-west-2",
+                                       components=["Gateway", "Memory"])
+    for entry in ac_full:
+        sub = entry["sub_component"]
+        price = float(entry["dimensions"][0]["price_usd"])
+        if "API-Invocations" in sub: price_map["gateway_inv"] = price
+        elif "Search-API" in sub: price_map["gateway_search"] = price
+        elif "Tool-Indexing" in sub: price_map["gateway_index"] = price
+        elif "Short-Term" in sub: price_map["stm"] = price
+        elif "Long-Term-Memory-Storage" in sub and "Built-in" in sub: price_map["ltm_storage"] = price
+        elif "Long-Term-Memory-Retrieval" in sub: price_map["ltm_retrieval"] = price
+
+    # With browser and CI at different I/O wait rates
+    result_70 = calculate_agentcore_cost(
+        runtime_vcpu_price_hr=price_map["runtime_vcpu"],
+        runtime_mem_price_hr=price_map["runtime_mem"],
+        gateway_invocation_price=price_map["gateway_inv"],
+        gateway_search_price=price_map["gateway_search"],
+        gateway_indexing_price=price_map["gateway_index"],
+        stm_event_price=price_map["stm"],
+        ltm_storage_price=price_map["ltm_storage"],
+        ltm_retrieval_price=price_map["ltm_retrieval"],
+        browser_vcpu_price_hr=price_map["browser_vcpu"],
+        browser_mem_price_hr=price_map["browser_mem"],
+        ci_vcpu_price_hr=price_map["ci_vcpu"],
+        ci_mem_price_hr=price_map["ci_mem"],
+        questions_per_month=100000,
+        browser_io_wait_pct=0.70,
+        ci_io_wait_pct=0.20,
+    )
+
+    # With no I/O wait (0%) — should cost more for CPU
+    result_0 = calculate_agentcore_cost(
+        runtime_vcpu_price_hr=price_map["runtime_vcpu"],
+        runtime_mem_price_hr=price_map["runtime_mem"],
+        gateway_invocation_price=price_map["gateway_inv"],
+        gateway_search_price=price_map["gateway_search"],
+        gateway_indexing_price=price_map["gateway_index"],
+        stm_event_price=price_map["stm"],
+        ltm_storage_price=price_map["ltm_storage"],
+        ltm_retrieval_price=price_map["ltm_retrieval"],
+        browser_vcpu_price_hr=price_map["browser_vcpu"],
+        browser_mem_price_hr=price_map["browser_mem"],
+        ci_vcpu_price_hr=price_map["ci_vcpu"],
+        ci_mem_price_hr=price_map["ci_mem"],
+        questions_per_month=100000,
+        browser_io_wait_pct=0.0,
+        ci_io_wait_pct=0.0,
+    )
+
+    _assert(result_0["browser_monthly"] > result_70["browser_monthly"],
+            "BrowserTool costs more with 0% I/O wait than 70%")
+    _assert(result_0["code_interpreter_monthly"] > result_70["code_interpreter_monthly"],
+            "CodeInterpreter costs more with 0% I/O wait than 20%")
+    _assert(result_70["browser_monthly"] > 0,
+            "BrowserTool cost is positive with 70% I/O wait")
+    _assert(result_70["code_interpreter_monthly"] > 0,
+            "CodeInterpreter cost is positive with 20% I/O wait")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
@@ -576,6 +718,7 @@ if __name__ == "__main__":
     _run_group("Group 4: Integration", test_integration)
     _run_group("Group 5: list_agentcore_components()", test_list_agentcore_components)
     _run_group("Group 6: check_capacity_fit() compact", test_check_capacity_fit_compact)
+    _run_group("Group 7: Guards and I/O wait", test_guards_and_io_wait)
 
     print()
     print("=" * 70)
